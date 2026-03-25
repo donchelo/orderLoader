@@ -1,14 +1,13 @@
 /**
  * Step 1: PDF → DB (estado PARSED).
  *
- * Escanea pedidos/raw/ buscando carpetas sin data_extraida.json.
- * Por cada PDF encontrado, parsea e inserta en orderloader.db.
+ * Comodin: Claude AI extrae directamente el JSON SAP B1.
  * Es idempotente: carpetas con data_extraida.json se saltan.
  */
 
 import fs from "fs";
 import path from "path";
-import * as pdfParse from "pdf-parse";
+import Anthropic from "@anthropic-ai/sdk";
 import { getConfig } from "../config";
 import { getDb, logPipeline } from "../db";
 
@@ -19,224 +18,167 @@ export interface StepResult {
   detalles: string[];
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── SAP B1 output schema ─────────────────────────────────────────────────────
 
-function safeFloat(text: string | undefined): number {
-  if (!text) return 0;
-  let clean = text.replace(/[^\d,\.]/g, "");
-  if (clean.includes(",") && clean.includes(".")) {
-    if (clean.lastIndexOf(".") > clean.lastIndexOf(",")) {
-      clean = clean.replace(/,/g, "");
-    } else {
-      clean = clean.replace(/\./g, "").replace(",", ".");
+export interface DocumentLine {
+  SupplierCatNum: string;
+  Quantity: number;
+}
+
+export interface SapB1Order {
+  DocType: "dDocument_Items";
+  NumAtCard: string;
+  CardCode: string;
+  DocDate: string;    // YYYYMMDD
+  DocDueDate: string; // YYYYMMDD
+  TaxDate: string;    // YYYYMMDD
+  DocumentLines: DocumentLine[];
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function yyyymmddToIso(d: string): string {
+  if (/^\d{8}$/.test(d)) return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`;
+  return d;
+}
+
+// ── Prompt ───────────────────────────────────────────────────────────────────
+
+const SYSTEM_PROMPT = `# PURCHASE ORDER EXTRACTION AGENT
+
+## ROLE
+You are a Purchase Order Analyzer specialized in extracting structured information from purchase documents and converting it to JSON format with absolute precision.
+
+## OBJECTIVE
+Analyze the provided purchase order document and generate a JSON object that faithfully replicates all contained information, following the defined schema without errors or omissions.
+
+## EXTRACTION PROCESS
+
+### 1. INITIAL ANALYSIS
+* Completely examine the purchase order document
+* Identify and count the total number of unique items/products
+* Navigate to the last page to locate the summary totals
+* Extract the total number of items and total amount as displayed (do not calculate, only copy)
+* Mentally record this information for subsequent validation
+
+### 2. DATA EXTRACTION
+* **Buyer information**: NIT and relevant data
+* **Order details**:
+  * Order number (NumAtCard)
+  * General delivery date (DocDueDate)
+  * Document date (DocDate) → Corresponds to the "fecha de elaboración" in the PDF
+  * Tax date (TaxDate) → Corresponds to the "fecha de la factura" or invoice/tax reference date in the PDF
+* **Individual items**: For each product extract:
+  * Product code/reference (SupplierCatNum)
+  * Requested quantity (Quantity)
+
+### 3. DATA TRANSFORMATION
+Apply these mandatory conversion rules:
+
+**Dates**: Convert to YYYYMMDD format exclusively (e.g., March 25, 2026 → "20260325")
+
+**Buyer NIT (CardCode)**: Always use "CN800069933" regardless of original value
+
+**Numbers** (CRITICAL FOR CONSISTENCY):
+* Remove thousand separators: "5.300" → 5300
+* Quantity (Quantity): Values like "1.000" mean one thousand units, not one. Remove the thousand separator and convert to integer.
+  * "1.000" → 1000
+  * "9.000" → 9000
+  * "126.000" → 126000
+* For integers: Use whole numbers without decimals: 6000 (not 6000.00)
+
+**Missing fields**: Use empty string ""
+
+### 4. JSON FORMATTING RULES
+**CRITICAL**: Ensure proper JSON syntax:
+* No trailing commas before closing brackets
+* Proper number formatting without quotes: 6000 not "6000"
+* No special characters that break JSON parsing
+* DocType is always the fixed string "dDocument_Items"
+
+### 5. FINAL VALIDATION
+Before generating the response, verify:
+* Item count in DocumentLines matches exactly with initial count
+* All required fields are present
+* Date formats are correct (YYYYMMDD)
+* CardCode is "CN800069933"
+* DocType is "dDocument_Items"
+* Quantities correctly reflect thousands (e.g., "126.000" → 126000)
+* Valid JSON syntax (no trailing commas, proper brackets)
+
+## RESPONSE FORMAT
+**CRITICAL INSTRUCTION**: Your response must contain ONLY the JSON object. Do not include:
+* Explanations
+* Comments
+* Additional text
+* Markdown code blocks
+* Confirmations`;
+
+// ── AI Parser (Comodin) ──────────────────────────────────────────────────────
+
+async function parseComodinWithAI(pdfText: string): Promise<[SapB1Order | null, string]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return [null, "ANTHROPIC_API_KEY no configurado en .env"];
+
+  const client = new Anthropic({ apiKey });
+
+  const msg = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 4096,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content: pdfText }],
+  });
+
+  const text = msg.content[0].type === "text" ? msg.content[0].text.trim() : "";
+  if (!text) return [null, "Respuesta vacía del modelo"];
+
+  // Strip markdown code fences if model includes them despite instructions
+  const clean = text.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "").trim();
+
+  try {
+    const order = JSON.parse(clean) as SapB1Order;
+    if (!order.NumAtCard) return [null, "JSON inválido: falta NumAtCard"];
+    if (!Array.isArray(order.DocumentLines) || !order.DocumentLines.length) {
+      return [null, "JSON inválido: DocumentLines vacío"];
     }
-  } else if (clean.includes(",")) {
-    clean = clean.replace(",", ".");
-  } else if (clean.includes(".")) {
-    const parts = clean.split(".");
-    if (parts[parts.length - 1].length === 3) {
-      clean = clean.replace(/\./g, "");
-    }
+    return [order, "OK"];
+  } catch (e) {
+    return [null, `JSON parse error: ${String(e).slice(0, 80)} | Respuesta: ${clean.slice(0, 200)}`];
   }
-  return parseFloat(clean) || 0;
 }
 
-function normalizeDate(dateStr: string): string {
-  const m = dateStr.match(/(\d{2})[./](\d{2})[./](\d{4})/);
-  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
-  return dateStr;
-}
+// ── DB helpers ───────────────────────────────────────────────────────────────
 
-// ── Parsers por cliente ────────────────────────────────────────────────────
-
-interface ParsedOrder {
-  nit: string;
-  oc: string;
-  fecha_p: string;
-  fecha_g: string;
-  items: Array<[string, string, number, number, string]>; // [codigo, desc, cantidad, precio, fecha_ent]
-  total: number;
-  notas: string;
-  cliente: string;
-}
-
-function parseHermeco(text: string): [ParsedOrder | null, string] {
-  const nit = "890924167-6";
-  const ocMatch = text.match(/Número\/Number\s+(\d+)/);
-  if (!ocMatch) return [null, "OC no encontrada"];
-  const oc = ocMatch[1];
-
-  const fechaPMatch = text.match(/Fecha\/Date\s+(\d{2}\/\d{2}\/\d{4})/);
-  const fecha_p = fechaPMatch ? normalizeDate(fechaPMatch[1]) : "";
-
-  let notas = "";
-  const obsMatch = text.match(/Observaciones:(.*?)MONEDA/s);
-  if (obsMatch) notas = obsMatch[1].trim();
-
-  const items: Array<[string, string, number, number, string]> = [];
-  for (const line of text.split("\n")) {
-    const m = line.match(/^(\d{5})\s+(\d{6})\s+(.*?)\s+(\d{8})\s+.*?\s+UN\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)/);
-    if (m) {
-      const rawF = m[4];
-      const fechaEnt = `${rawF.slice(0, 4)}-${rawF.slice(4, 6)}-${rawF.slice(6)}`;
-      items.push([m[2], m[3].trim(), safeFloat(m[5]), safeFloat(m[6]), fechaEnt]);
-    } else if (line.includes(" UN ")) {
-      const parts = line.split(/\s+/);
-      const unIdx = parts.indexOf("UN");
-      const codM = line.match(/(\d{6})/);
-      if (unIdx > 0 && codM) {
-        const codigo = codM[1];
-        const cantidad = safeFloat(parts[unIdx + 1]);
-        const precio = safeFloat(parts[unIdx + 2]);
-        const fM = line.match(/(\d{8})/);
-        let fechaEnt = "";
-        if (fM) {
-          const rawF = fM[1];
-          fechaEnt = `${rawF.slice(0, 4)}-${rawF.slice(4, 6)}-${rawF.slice(6)}`;
-        }
-        if (!items.some((it) => it[0] === codigo && it[2] === cantidad)) {
-          items.push([codigo, "Revisar Descripción", cantidad, precio, fechaEnt]);
-        }
-      }
-    }
-  }
-
-  if (!items.length) return [null, "Sin items detectados"];
-
-  const fechas = items.map((it) => it[4]).filter(Boolean);
-  const fecha_g = fechas.length ? fechas.sort().at(-1)! : fecha_p;
-  const total = items.reduce((s, it) => s + it[2] * it[3], 0);
-
-  return [{ nit, oc, fecha_p, fecha_g, items, total, notas, cliente: "HERMECO" }, "OK"];
-}
-
-function parseComodin(text: string): [ParsedOrder | null, string] {
-  const ocMatch = text.match(/Número OC:\s+(\d+)/);
-  if (!ocMatch) return [null, "OC no encontrada"];
-  const oc = ocMatch[1];
-
-  const fechaEMatch = text.match(/Fecha elaboración:\s+(\d{2}\/\d{2}\/\d{4})/);
-  const fecha_p = fechaEMatch ? normalizeDate(fechaEMatch[1]) : "";
-
-  const objMatch = text.match(/TOTAL\s+[\d.]+\s+([\d.]+)/);
-  const subtotalObj = objMatch ? safeFloat(objMatch[1]) : 0;
-
-  const items: Array<[string, string, number, number, string]> = [];
-  let suma = 0;
-  for (const line of text.split("\n")) {
-    const m = line.match(/^\s*(\d+)\s+(\d{11})\s+.*?\s+(\d{2}\.\d{2}\.\d{4})\s+.*?\s+([\d.]+)\s+UN\s+([\d.]+)\s+([\d.]+)/);
-    if (m) {
-      const fechaEnt = normalizeDate(m[3]);
-      const cantidad = safeFloat(m[4]);
-      const precio = safeFloat(m[5]);
-      const subLinea = safeFloat(m[6]);
-      items.push([m[2], "Producto Comodín", cantidad, precio, fechaEnt]);
-      suma += subLinea;
-    }
-  }
-
-  if (!items.length) return [null, "Sin items detectados"];
-  if (subtotalObj > 0 && Math.abs(suma - subtotalObj) > 10) {
-    return [null, `Total no cuadra: PDF $${subtotalObj.toFixed(0)} vs suma $${suma.toFixed(0)}`];
-  }
-
-  return [{
-    nit: "800069933", oc, fecha_p,
-    fecha_g: items[0][4] || fecha_p,
-    items,
-    total: subtotalObj || suma,
-    notas: "Pedido Comodín",
-    cliente: "COMODIN",
-  }, "OK"];
-}
-
-function parseExito(text: string): [ParsedOrder | null, string] {
-  const ocMatch = text.match(/Número de Orden\s+(\d+)/);
-  if (!ocMatch) return [null, "OC no encontrada"];
-  const oc = ocMatch[1];
-
-  const fpMatch = text.match(/Día\s+Mes\s+Año\s*\n\s*(\d+)\s+(\d+)\s+(\d+)/);
-  const fecha_p = fpMatch
-    ? `${fpMatch[3]}-${fpMatch[2].padStart(2, "0")}-${fpMatch[1].padStart(2, "0")}`
-    : "";
-
-  const feMatch = text.match(/Fecha de Ejecución:\s*(\d{2}\.\d{2}\.\d{4})/);
-  const fecha_g = feMatch ? normalizeDate(feMatch[1]) : fecha_p;
-
-  const objMatch = text.match(/Valor Base\s*:\s*([\d.,]+)/);
-  const subtotalObj = objMatch ? safeFloat(objMatch[1]) : 0;
-
-  const items: Array<[string, string, number, number, string]> = [];
-  let suma = 0;
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (/^\s*(\d{5})\s+(\d{7})/.test(line)) {
-      const parts = line.split(/\s+/);
-      const codigo = parts[1];
-      const unIdx = parts.indexOf("UN");
-      if (unIdx > 0) {
-        const precio = safeFloat(parts[unIdx + 1]);
-        const subLinea = safeFloat(parts[unIdx + 2]);
-        let cant = 0;
-        for (const p of parts.slice(0, unIdx)) {
-          if (/^[\d.]+$/.test(p) && p.length > 1) cant = safeFloat(p);
-        }
-        if (cant === 0 && i + 1 < lines.length) {
-          const next = lines[i + 1].split(/\s+/);
-          if (next[0] && /^[\d.]+$/.test(next[0])) cant = safeFloat(next[0]);
-        }
-        if (cant > 0) {
-          items.push([codigo, "Producto Éxito", cant, precio, fecha_g]);
-          suma += subLinea;
-        }
-      }
-    }
-  }
-
-  if (!items.length) return [null, "Sin items detectados"];
-  if (subtotalObj > 0 && Math.abs(suma - subtotalObj) > 10) {
-    return [null, `Total no cuadra: PDF $${subtotalObj.toFixed(0)} vs suma $${suma.toFixed(0)}`];
-  }
-
-  return [{
-    nit: "9008516551", oc, fecha_p, fecha_g,
-    items,
-    total: subtotalObj || suma,
-    notas: "Pedido Éxito",
-    cliente: "EXITO",
-  }, "OK"];
-}
-
-const PARSERS: Record<string, (text: string) => [ParsedOrder | null, string]> = {
-  Hermeco: parseHermeco,
-  Comodin: parseComodin,
-  Exito: parseExito,
-};
-
-// ── DB helpers ─────────────────────────────────────────────────────────────
-
-function insertOrden(db: ReturnType<typeof getDb>, data: ParsedOrder, carpeta: string): void {
+function insertSapOrder(
+  db: ReturnType<typeof getDb>,
+  order: SapB1Order,
+  carpeta: string
+): void {
   const now = new Date().toISOString();
+  const nit = order.CardCode.replace(/^CN/, "");
+  const fechaP = yyyymmddToIso(order.DocDate);
+  const fechaG = yyyymmddToIso(order.DocDueDate);
+
   db.prepare(`
     INSERT OR REPLACE INTO pedidos_maestro
       (nit_cliente, orden_compra, fecha_solicitado, fecha_entrega_general,
        cliente_nombre, subtotal, notas, estado, ts_parsed, fase_actual, carpeta_origen)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'PARSED', ?, 1, ?)
-  `).run(data.nit, data.oc, data.fecha_p, data.fecha_g, data.cliente, data.total, data.notas, now, carpeta);
+    VALUES (?, ?, ?, ?, 'COMODIN', 0, ?, 'PARSED', ?, 1, ?)
+  `).run(nit, order.NumAtCard, fechaP, fechaG, `TaxDate:${order.TaxDate}`, now, carpeta);
 
-  db.prepare("DELETE FROM pedidos_detalle WHERE orden_compra = ?").run(data.oc);
-  const insertDetail = db.prepare(`
+  db.prepare("DELETE FROM pedidos_detalle WHERE orden_compra = ?").run(order.NumAtCard);
+
+  const ins = db.prepare(`
     INSERT INTO pedidos_detalle
       (orden_compra, codigo_producto, descripcion, cantidad, precio_unitario, subtotal_item, fecha_entrega)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, '', ?, 0, 0, ?)
   `);
-  for (const [codigo, desc, cantidad, precio, fechaEnt] of data.items) {
-    insertDetail.run(data.oc, codigo, desc, cantidad, precio, cantidad * precio, fechaEnt);
+  for (const line of order.DocumentLines) {
+    ins.run(order.NumAtCard, line.SupplierCatNum, line.Quantity, fechaG);
   }
 }
 
-// ── Main ───────────────────────────────────────────────────────────────────
+// ── Main ─────────────────────────────────────────────────────────────────────
 
 export async function run(): Promise<StepResult> {
   const config = getConfig();
@@ -253,67 +195,70 @@ export async function run(): Promise<StepResult> {
     "ERROR_DUPLICADO", "ERROR_ITEMS", "ERROR_SAP",
   ]);
 
-  for (const [cliente, parser] of Object.entries(PARSERS)) {
-    const clienteDir = path.join(config.pedidosRawDir, cliente);
-    if (!fs.existsSync(clienteDir)) continue;
+  const clienteDir = path.join(config.pedidosRawDir, "Comodin");
+  if (!fs.existsSync(clienteDir)) {
+    result.detalles.push("No existe pedidos/raw/Comodin");
+    return result;
+  }
 
-    for (const carpetaNombre of fs.readdirSync(clienteDir).sort()) {
-      const carpetaPath = path.join(clienteDir, carpetaNombre);
-      if (!fs.statSync(carpetaPath).isDirectory()) continue;
+  for (const carpetaNombre of fs.readdirSync(clienteDir).sort()) {
+    const carpetaPath = path.join(clienteDir, carpetaNombre);
+    if (!fs.statSync(carpetaPath).isDirectory()) continue;
 
-      const marker = path.join(carpetaPath, "data_extraida.json");
-      if (fs.existsSync(marker)) { result.saltados++; continue; }
+    const marker = path.join(carpetaPath, "data_extraida.json");
+    if (fs.existsSync(marker)) { result.saltados++; continue; }
 
-      const pdfs = fs.readdirSync(carpetaPath).filter((f) => f.toLowerCase().endsWith(".pdf"));
-      if (!pdfs.length) continue;
+    const pdfs = fs.readdirSync(carpetaPath).filter(f => f.toLowerCase().endsWith(".pdf"));
+    if (!pdfs.length) continue;
 
-      const pdfPath = path.join(carpetaPath, pdfs[0]);
-      result.detalles.push(`Procesando: ${cliente}/${carpetaNombre}/${pdfs[0]}`);
+    const pdfPath = path.join(carpetaPath, pdfs[0]);
+    result.detalles.push(`Procesando: Comodin/${carpetaNombre}/${pdfs[0]}`);
 
-      try {
-        const buffer = fs.readFileSync(pdfPath);
-        const parsed = await (pdfParse as unknown as (buf: Buffer) => Promise<{ text: string }>)(buffer);
-        const text = parsed.text;
+    try {
+      const buffer = fs.readFileSync(pdfPath);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const pdfParseFn = require("pdf-parse/lib/pdf-parse") as (buf: Buffer) => Promise<{ text: string }>;
+      const parsed = await pdfParseFn(buffer);
 
-        const [data, status] = parser(text);
+      const [order, status] = await parseComodinWithAI(parsed.text);
 
-        if (!data) {
-          result.errores++;
-          result.detalles.push(`  ✗ ${status}`);
-          try {
-            logPipeline(db, carpetaNombre, 1, "parse", "ERROR", `Parse fallido: ${status}`);
-          } catch { /* ignore */ }
-          continue;
-        }
-
-        // Skip if OC already advanced in pipeline
-        const existente = db.prepare(
-          "SELECT estado FROM pedidos_maestro WHERE orden_compra = ?"
-        ).get(data.oc) as { estado: string } | undefined;
-
-        if (existente && ESTADOS_AVANZADOS.has(existente.estado)) {
-          result.saltados++;
-          result.detalles.push(`  [skip] OC ${data.oc} ya en ${existente.estado}`);
-          fs.writeFileSync(marker, JSON.stringify({ oc: data.oc, skip_reason: existente.estado, ts: new Date().toISOString() }, null, 2));
-          continue;
-        }
-
-        const tx = db.transaction(() => {
-          insertOrden(db, data, carpetaPath);
-          logPipeline(db, data.oc, 1, "parse", "OK", `PDF: ${pdfs[0]}`);
-        });
-        tx();
-
-        fs.writeFileSync(marker, JSON.stringify({
-          oc: data.oc, cliente: data.cliente, pdf: pdfs[0], ts: new Date().toISOString(),
-        }, null, 2));
-
-        result.procesados++;
-        result.detalles.push(`  ✓ OC ${data.oc} → PARSED (${data.items.length} items)`);
-      } catch (e) {
+      if (!order) {
         result.errores++;
-        result.detalles.push(`  ✗ Error: ${String(e)}`);
+        result.detalles.push(`  ✗ ${status}`);
+        logPipeline(db, carpetaNombre, 1, "parse", "ERROR", `AI parse fallido: ${status}`);
+        continue;
       }
+
+      // Saltar si OC ya avanzó en el pipeline
+      const existente = db.prepare(
+        "SELECT estado FROM pedidos_maestro WHERE orden_compra = ?"
+      ).get(order.NumAtCard) as { estado: string } | undefined;
+
+      if (existente && ESTADOS_AVANZADOS.has(existente.estado)) {
+        result.saltados++;
+        result.detalles.push(`  [skip] OC ${order.NumAtCard} ya en ${existente.estado}`);
+        fs.writeFileSync(marker, JSON.stringify(
+          { ...order, skip_reason: existente.estado, ts: new Date().toISOString() }, null, 2
+        ));
+        continue;
+      }
+
+      const tx = db.transaction(() => {
+        insertSapOrder(db, order, carpetaPath);
+        logPipeline(db, order.NumAtCard, 1, "parse", "OK", `PDF: ${pdfs[0]}`);
+      });
+      tx();
+
+      // data_extraida.json contiene el payload SAP B1 listo para usar en step5
+      fs.writeFileSync(marker, JSON.stringify(
+        { ...order, pdf: pdfs[0], ts: new Date().toISOString() }, null, 2
+      ));
+
+      result.procesados++;
+      result.detalles.push(`  ✓ OC ${order.NumAtCard} → PARSED (${order.DocumentLines.length} items)`);
+    } catch (e) {
+      result.errores++;
+      result.detalles.push(`  ✗ Error: ${String(e)}`);
     }
   }
 

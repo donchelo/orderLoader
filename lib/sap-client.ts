@@ -127,8 +127,17 @@ export class SapB1Client {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SAP_TIMEOUT_MS);
     try {
-      // SAP B1 often uses self-signed certs — skip verification via env flag
+      // SAP B1 often uses self-signed certs — if you get SSL errors,
+      // you might need to run with NODE_TLS_REJECT_UNAUTHORIZED=0
       return await fetch(url, { ...opts, signal: controller.signal });
+    } catch (e: any) {
+      if (e.name === "AbortError") {
+        throw new Error(`SAP timeout (${SAP_TIMEOUT_MS}ms) calling ${url}`);
+      }
+      if (e.code === "CERT_HAS_EXPIRED" || e.code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" || e.message?.includes("certificate")) {
+        throw new Error(`Error de certificado SSL con SAP: ${e.message}. Intenta configurar NODE_TLS_REJECT_UNAUTHORIZED=0 en tu entorno si usas certificados auto-firmados.`);
+      }
+      throw new Error(`Error de red conectando a SAP (${url}): ${e.message}`);
     } finally {
       clearTimeout(timer);
     }

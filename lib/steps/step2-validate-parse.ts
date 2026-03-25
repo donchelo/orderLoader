@@ -9,7 +9,6 @@
 
 import fs from "fs";
 import path from "path";
-import * as pdfParse from "pdf-parse";
 import nodemailer from "nodemailer";
 import { getConfig } from "../config";
 import { getDb, logPipeline } from "../db";
@@ -125,6 +124,10 @@ export async function run(): Promise<StepResult> {
       errores.push("Sin ítems en pedidos_detalle");
     } else {
       if (items.length === 1) advertencias.push("Solo 1 ítem — verificar parseo");
+
+      // Detectar modo AI: todos los precios son 0 (Comodin parseado con IA)
+      const todosPrecios0 = items.every(it => Number(it.precio_unitario || 0) === 0);
+
       let suma = 0;
       for (const it of items) {
         const codigo = String(it.codigo_producto || "").trim();
@@ -134,20 +137,27 @@ export async function run(): Promise<StepResult> {
         const desc = String(it.descripcion || "");
         if (!codigo) errores.push(`Ítem sin codigo_producto (${desc.slice(0, 40)})`);
         if (cant <= 0) errores.push(`Ítem '${codigo}': cantidad ${cant} inválida`);
-        if (precio <= 0) errores.push(`Ítem '${codigo}': precio ${precio} inválido`);
-        if (cant > 0 && precio > 0 && Math.abs(cant * precio - subDb) > 1) {
-          errores.push(`Ítem '${codigo}': subtotal_item $${subDb.toFixed(0)} ≠ cant×precio $${(cant*precio).toFixed(0)}`);
+        if (!todosPrecios0) {
+          if (precio <= 0) errores.push(`Ítem '${codigo}': precio ${precio} inválido`);
+          if (cant > 0 && precio > 0 && Math.abs(cant * precio - subDb) > 1) {
+            errores.push(`Ítem '${codigo}': subtotal_item $${subDb.toFixed(0)} ≠ cant×precio $${(cant*precio).toFixed(0)}`);
+          }
         }
         if (desc.toLowerCase().includes("revisar")) {
           advertencias.push(`Ítem '${codigo}': descripción requiere revisión`);
         }
         suma += cant * precio;
       }
-      const subtotal = Number(row.subtotal || 0);
-      if (subtotal > 0) {
-        const diffPct = Math.abs(suma - subtotal) / subtotal * 100;
-        if (diffPct > 5) {
-          errores.push(`Total no cuadra: suma ítems $${suma.toFixed(0)} vs subtotal $${subtotal.toFixed(0)} (${diffPct.toFixed(1)}%)`);
+
+      if (todosPrecios0) {
+        advertencias.push("Precios no disponibles — extraídos por IA (se completarán en step4)");
+      } else {
+        const subtotal = Number(row.subtotal || 0);
+        if (subtotal > 0) {
+          const diffPct = Math.abs(suma - subtotal) / subtotal * 100;
+          if (diffPct > 5) {
+            errores.push(`Total no cuadra: suma ítems $${suma.toFixed(0)} vs subtotal $${subtotal.toFixed(0)} (${diffPct.toFixed(1)}%)`);
+          }
         }
       }
     }
@@ -163,7 +173,7 @@ export async function run(): Promise<StepResult> {
           const buf = fs.readFileSync(path.join(carpeta, pdfs[0]));
           const parsed = await pdfParseFn(buf);
           // Re-run the appropriate parser (dynamic import to avoid circular deps)
-          const { run: step1Run, ..._ } = await import("./step1-parse");
+          await import("./step1-parse");
           // We just check if the PDF text has the OC number present
           if (!parsed.text.includes(oc)) {
             errores.push(`OC ${oc} no encontrada en el texto del PDF original`);

@@ -4,9 +4,12 @@
  * ITEMS_OK → SAP_MONTADO | ERROR_SAP
  */
 
+import fs from "fs";
+import path from "path";
 import { getConfig } from "../config";
 import { getDb, logPipeline } from "../db";
 import { getSapClient, clearSapClient } from "../sap-client";
+import type { SapB1Order } from "./step1-parse";
 
 export interface StepResult {
   procesados: number;
@@ -67,17 +70,37 @@ export async function run(): Promise<StepResult> {
       continue;
     }
 
-    const payload = {
-      CardCode: cardCode,
-      NumAtCard: oc,
-      DocDate: row.fecha_solicitado as string,
-      DocumentLines: items.map(it => ({
-        ItemCode: it.codigo_producto,
-        Quantity: it.cantidad,
-        Price: it.precio_unitario,
-        ShipDate: it.fecha_entrega || row.fecha_entrega_general,
-      })),
-    };
+    // Comodin (AI-parsed): usar data_extraida.json directamente como payload SAP
+    const carpeta = row.carpeta_origen as string | null;
+    const markerPath = carpeta ? path.join(carpeta, "data_extraida.json") : null;
+    const aiData = markerPath && fs.existsSync(markerPath)
+      ? (() => { try { return JSON.parse(fs.readFileSync(markerPath, "utf8")) as SapB1Order; } catch { return null; } })()
+      : null;
+
+    const payload = aiData?.DocType === "dDocument_Items"
+      ? {
+          DocType: aiData.DocType,
+          CardCode: aiData.CardCode,
+          NumAtCard: aiData.NumAtCard,
+          DocDate: aiData.DocDate,
+          DocDueDate: aiData.DocDueDate,
+          TaxDate: aiData.TaxDate,
+          DocumentLines: aiData.DocumentLines.map(l => ({
+            SupplierCatNum: l.SupplierCatNum,
+            Quantity: l.Quantity,
+          })),
+        }
+      : {
+          CardCode: cardCode,
+          NumAtCard: oc,
+          DocDate: row.fecha_solicitado as string,
+          DocumentLines: items.map(it => ({
+            ItemCode: it.codigo_producto,
+            Quantity: it.cantidad,
+            Price: it.precio_unitario,
+            ShipDate: it.fecha_entrega || row.fecha_entrega_general,
+          })),
+        };
 
     try {
       const response = await sap.post<Record<string, unknown>>("PurchaseOrders", payload);
