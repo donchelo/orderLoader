@@ -82,9 +82,10 @@ export async function run(): Promise<StepResult> {
         return result;
       }
 
-      result.detalles.push(`Encontrados ${messages.length} correo(s) no leído(s)`);
+      result.detalles.push(`Encontrados ${messages.length} correo(s) no leído(s) — procesando 1`);
 
-      for (const msg of messages) {
+      // Flujo unitario: procesar solo el primer correo; el pipeline llama step0 en loop
+      for (const msg of messages.slice(0, 1)) {
         try {
           const envelope = msg.envelope;
           const subject = envelope?.subject ?? "Sin asunto";
@@ -164,16 +165,16 @@ export async function run(): Promise<StepResult> {
             fs.writeFileSync(path.join(pedidoPath, "correo_original.txt"), bodyText, "utf8");
           }
 
-          const destFolder = `Pedidos/Procesados/${client_folder}`;
+          const destFolder = `Pedidos/Ingresados/${client_folder}`;
 
-          // Write metadata
+          // Write metadata — incluye UID para que step7 pueda archivar el correo
           const metadata = {
             from: sender,
             subject,
             date: dateHeader,
             client: client_folder,
             folder_local: `pedidos/raw/${client_folder}/${folderName}`,
-            folder_server: destFolder,
+            imap_uid: msg.uid,
             n_adjuntos_pdf: pdfCount,
             ts_download: new Date().toISOString(),
           };
@@ -189,18 +190,8 @@ export async function run(): Promise<StepResult> {
             "utf8"
           );
 
-          // Mark as seen and move to processed folder
+          // Solo marcar como leído — el movimiento a INBOX.Ingresados lo hace step7
           await client.messageFlagsAdd({ uid: msg.uid }, ["\\Seen"]);
-          try {
-            await client.mailboxCreate(destFolder);
-          } catch {
-            /* already exists */
-          }
-          try {
-            await client.messageMove({ uid: msg.uid }, destFolder);
-          } catch {
-            /* keep in INBOX if move fails */
-          }
 
           // Log to DB
           try {

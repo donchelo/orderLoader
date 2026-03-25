@@ -7,6 +7,7 @@ export interface Config {
   pedidosRawDir: string;
   pedidosBackupsDir: string;
   pedidosReportsDir: string;
+  pedidosIngresadosDir: string;
 
   // IMAP
   emailUser: string;
@@ -59,6 +60,7 @@ export function getConfig(): Config {
     pedidosRawDir: path.join(workspaceRoot, "pedidos", "raw"),
     pedidosBackupsDir: path.join(workspaceRoot, "pedidos", "backups"),
     pedidosReportsDir: path.join(workspaceRoot, "pedidos", "reports"),
+    pedidosIngresadosDir: path.join(workspaceRoot, "pedidos", "ingresados"),
 
     emailUser,
     emailPass: process.env.EMAIL_PASS ?? "",
@@ -83,13 +85,13 @@ export function getConfig(): Config {
     nitToCardCode: {
       "890924167-6": "C_HERMECO",
       "800069933":   "CN800069933",
-      "9008516551":  "C_EXITO",
+      "890900608":   "CN890900608",
     },
 
     clientKeywords: {
       "Comodin": ["gco", "comodin", "americanino", "800069933", "gco.com.co"],
       "Hermeco": ["hermeco", "offcorss", "890924167", "offcorss.com"],
-      "Exito":   ["exito", "grupo-exito", "9008516551", "grupo-exito.com"],
+      "Exito":   ["exito", "grupo-exito", "890900608", "grupo-exito.com"],
     },
   };
 

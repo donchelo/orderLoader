@@ -4,7 +4,10 @@
  * VALIDADO + errores → email HTML → CERRADO
  */
 
+import fs from "fs";
+import path from "path";
 import nodemailer from "nodemailer";
+import { ImapFlow } from "imapflow";
 import { getConfig } from "../config";
 import { getDb, logPipeline } from "../db";
 
@@ -137,6 +140,39 @@ export async function run(): Promise<StepResult> {
       }
     });
     tx();
+
+    // Mover correos originales de INBOX → INBOX.Ingresados
+    const uids: number[] = [];
+    for (const row of rows) {
+      const carpeta = row.carpeta_origen as string | null;
+      if (!carpeta) continue;
+      try {
+        const meta = JSON.parse(fs.readFileSync(path.join(carpeta, "correo_metadata.json"), "utf8"));
+        if (meta.imap_uid) uids.push(Number(meta.imap_uid));
+      } catch { /* metadata no disponible */ }
+    }
+
+    if (uids.length > 0) {
+      try {
+        const imap = new ImapFlow({
+          host: config.emailHost, port: config.emailPort, secure: true,
+          auth: { user: config.emailUser, pass: config.emailPass },
+          logger: false,
+        });
+        await imap.connect();
+        const lock = await imap.getMailboxLock("INBOX");
+        try {
+          try { await imap.mailboxCreate("INBOX.Ingresados"); } catch { /* ya existe */ }
+          await imap.messageMove(uids.map(String).join(","), "INBOX.Ingresados");
+          result.detalles.push(`✓ ${uids.length} correo(s) movidos a INBOX.Ingresados`);
+        } finally {
+          lock.release();
+        }
+        await imap.logout();
+      } catch (e) {
+        result.detalles.push(`⚠ No se pudo mover correo(s) IMAP: ${String(e).slice(0, 80)}`);
+      }
+    }
 
     result.procesados = rows.length;
     result.detalles.push(`✓ Email enviado a ${config.notifyEmail}: ${rows.length} pedidos → CERRADO`);
