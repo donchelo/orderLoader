@@ -26,15 +26,15 @@ interface Discrepancia {
   detalle?: string;
 }
 
-async function getItemFromSap(sap: Awaited<ReturnType<typeof getSapClient>>, codigo: string) {
+async function getItemFromSap(sap: Awaited<ReturnType<typeof getSapClient>>, itemCode: string) {
   try {
     return await sap.get<Record<string, unknown>>(
-      `Items('${codigo}')`,
+      `Items('${itemCode}')`,
       { "$select": "ItemCode,ItemName,ItemPrices" }
     );
   } catch (e) {
     const msg = String(e);
-    if (msg.includes("404") || msg.includes("Not Found") || msg.toLowerCase().includes("does not exist")) {
+    if (msg.includes("404") || msg.includes("Not Found") || msg.toLowerCase().includes("does not exist") || msg.includes("-2028")) {
       return null;
     }
     throw e;
@@ -151,8 +151,15 @@ export async function run(): Promise<StepResult> {
           result.detalles.push(`  [${codigo}] NO EXISTE en SAP`);
           continue;
         }
+        const itemCode = String(sapItem.ItemCode ?? codigo);
         const nombreSap = String(sapItem.ItemName ?? codigo);
         const precioSap = getSapPrice(sapItem, config.sapPriceList);
+
+        // Guardar ItemCode SAP resuelto y precio en DB
+        db.prepare(`
+          UPDATE pedidos_detalle SET codigo_producto=?, descripcion=?, precio_unitario=?
+          WHERE orden_compra=? AND codigo_producto=?
+        `).run(itemCode, nombreSap, precioSap, oc, codigo);
 
         if (precioSap === 0 && precioDb > 0) {
           discrepancias.push({ tipo: "SIN_PRECIO", codigo, nombre_sap: nombreSap, precio_db: precioDb, precio_sap: 0, detalle: `Sin precio en lista ${config.sapPriceList}` });
@@ -161,7 +168,7 @@ export async function run(): Promise<StepResult> {
           discrepancias.push({ tipo: "PRECIO_DIFIERE", codigo, nombre_sap: nombreSap, precio_db: precioDb, precio_sap: precioSap, detalle: `Diferencia ${diffPct.toFixed(1)}%` });
           result.detalles.push(`  [${codigo}] PRECIO DIFIERE — pedido $${precioDb.toFixed(0)} / SAP $${precioSap.toFixed(0)}`);
         } else {
-          result.detalles.push(`  [${codigo}] OK — $${precioSap.toFixed(0)}`);
+          result.detalles.push(`  [${codigo}] OK → ${itemCode} $${precioSap.toFixed(0)}`);
         }
       } catch (e) {
         discrepancias.push({ tipo: "ERROR_CONSULTA", codigo, detalle: String(e).slice(0, 120) });

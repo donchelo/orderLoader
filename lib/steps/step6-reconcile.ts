@@ -1,11 +1,17 @@
 /**
- * Step 6: Comparar pedido DB vs SAP B1 (GET PurchaseOrder).
+ * Step 6: Reconciliar PDF vs Orden de Venta en SAP B1.
+ *
+ * Compara data_extraida.json (fuente: PDF) contra Orders(DocEntry) en SAP.
+ * Registra todas las diferencias encontradas para que step7 las notifique.
  *
  * SAP_MONTADO → VALIDADO | ERROR_VALIDACION
  */
 
+import fs from "fs";
+import path from "path";
 import { getDb, logPipeline } from "../db";
 import { getSapClient, clearSapClient } from "../sap-client";
+import type { SapB1Order } from "./step1-parse";
 
 export interface StepResult {
   procesados: number;
@@ -14,10 +20,20 @@ export interface StepResult {
   detalles: string[];
 }
 
-function precioDifiere(dbPrecio: number, sapPrecio: number, toleranciaPct = 0.005): boolean {
-  if (dbPrecio === 0 && sapPrecio === 0) return false;
-  if (dbPrecio === 0) return true;
-  return Math.abs(dbPrecio - sapPrecio) / dbPrecio > toleranciaPct;
+interface Diferencia {
+  campo: string;
+  pdf: string | number;
+  sap: string | number;
+}
+
+function yyyymmddToIso(d: string): string {
+  if (/^\d{8}$/.test(d)) return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`;
+  return d;
+}
+
+function normalizeDate(d: string): string {
+  // SAP devuelve "2026-03-24T00:00:00Z" o "2026-03-24" — quedarnos solo con YYYY-MM-DD
+  return String(d ?? "").slice(0, 10);
 }
 
 export async function run(): Promise<StepResult> {
@@ -25,11 +41,11 @@ export async function run(): Promise<StepResult> {
   const db = getDb();
 
   const pendientes = db.prepare(
-    "SELECT * FROM pedidos_maestro WHERE estado IN ('SAP_MONTADO', 'SAP_VERIFICADO')"
+    "SELECT * FROM pedidos_maestro WHERE estado = 'SAP_MONTADO'"
   ).all() as Array<Record<string, unknown>>;
 
   if (!pendientes.length) {
-    result.detalles.push("No hay pedidos en estado SAP_MONTADO / SAP_VERIFICADO");
+    result.detalles.push("No hay pedidos en estado SAP_MONTADO");
     return result;
   }
 
@@ -47,57 +63,108 @@ export async function run(): Promise<StepResult> {
     const docEntry = row.sap_doc_entry;
     const now = new Date().toISOString();
 
+    // ── Cargar PDF (data_extraida.json) ──────────────────────────────────────
+    const carpeta = row.carpeta_origen as string | null;
+    const markerPath = carpeta ? path.join(carpeta, "data_extraida.json") : null;
+
+    if (!markerPath || !fs.existsSync(markerPath)) {
+      db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_VALIDACION', error_msg=? WHERE orden_compra=?`)
+        .run("data_extraida.json no encontrado para reconciliación", oc);
+      logPipeline(db, oc, 6, "reconcile", "ERROR", "data_extraida.json no encontrado");
+      result.errores++;
+      result.detalles.push(`✗ OC ${oc}: data_extraida.json no encontrado`);
+      continue;
+    }
+
+    let pdfData: SapB1Order;
     try {
-      const sapOrder = await sap.get<Record<string, unknown>>(`PurchaseOrders(${docEntry})`);
+      pdfData = JSON.parse(fs.readFileSync(markerPath, "utf8")) as SapB1Order;
+    } catch (e) {
+      db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_VALIDACION', error_msg=? WHERE orden_compra=?`)
+        .run(`data_extraida.json inválido: ${String(e).slice(0, 80)}`, oc);
+      logPipeline(db, oc, 6, "reconcile", "ERROR", "JSON inválido");
+      result.errores++;
+      result.detalles.push(`✗ OC ${oc}: data_extraida.json inválido`);
+      continue;
+    }
+
+    // ── Consultar orden en SAP ───────────────────────────────────────────────
+    try {
+      const sapOrder = await sap.get<Record<string, unknown>>(
+        `Orders(${docEntry})`,
+        { "$select": "DocEntry,DocNum,NumAtCard,CardCode,DocDate,DocDueDate,TaxDate,DocumentLines" }
+      );
       const sapLines = (sapOrder.DocumentLines as Array<Record<string, unknown>>) ?? [];
 
-      const dbItems = db.prepare(
-        "SELECT * FROM pedidos_detalle WHERE orden_compra = ?"
-      ).all(oc) as Array<Record<string, unknown>>;
+      const diferencias: Diferencia[] = [];
 
-      const discrepancias: Array<Record<string, unknown>> = [];
+      // ── Comparar cabecera ────────────────────────────────────────────────
+      const checks: [string, string, string][] = [
+        ["NumAtCard",  String(pdfData.NumAtCard),               String(sapOrder.NumAtCard ?? "")],
+        ["CardCode",   String(pdfData.CardCode),                String(sapOrder.CardCode ?? "")],
+        ["DocDate",    yyyymmddToIso(pdfData.DocDate),          normalizeDate(String(sapOrder.DocDate ?? ""))],
+        ["DocDueDate", yyyymmddToIso(pdfData.DocDueDate),       normalizeDate(String(sapOrder.DocDueDate ?? ""))],
+        ["TaxDate",    yyyymmddToIso(pdfData.TaxDate),          normalizeDate(String(sapOrder.TaxDate ?? ""))],
+      ];
+      for (const [campo, pdf, sap_val] of checks) {
+        if (pdf !== sap_val) diferencias.push({ campo, pdf, sap: sap_val });
+      }
 
-      for (const dbItem of dbItems) {
-        const codigo = String(dbItem.codigo_producto);
-        const sapLine = sapLines.find(l => l.ItemCode === codigo);
+      // ── Comparar cantidad de líneas ──────────────────────────────────────
+      if (pdfData.DocumentLines.length !== sapLines.length) {
+        diferencias.push({
+          campo: "líneas totales",
+          pdf: pdfData.DocumentLines.length,
+          sap: sapLines.length,
+        });
+      }
+
+      // ── Comparar cada línea por SupplierCatNum ───────────────────────────
+      for (const pdfLine of pdfData.DocumentLines) {
+        const sapLine = sapLines.find(
+          l => String(l.SupplierCatNum ?? "") === String(pdfLine.SupplierCatNum)
+        );
         if (!sapLine) {
-          discrepancias.push({ tipo: "FALTANTE", codigo, detalle: "Línea no encontrada en SAP" });
-        } else {
-          if (Math.abs(Number(sapLine.Quantity ?? 0) - Number(dbItem.cantidad)) > 0.001) {
-            discrepancias.push({ tipo: "CANTIDAD", codigo, db: dbItem.cantidad, sap: sapLine.Quantity });
-          }
-          if (precioDifiere(Number(dbItem.precio_unitario), Number(sapLine.Price ?? 0))) {
-            discrepancias.push({ tipo: "PRECIO", codigo, db: dbItem.precio_unitario, sap: sapLine.Price });
-          }
+          diferencias.push({
+            campo: `SupplierCatNum ${pdfLine.SupplierCatNum}`,
+            pdf: "presente",
+            sap: "no encontrado en SAP",
+          });
+        } else if (Math.abs(Number(sapLine.Quantity ?? 0) - pdfLine.Quantity) > 0.001) {
+          diferencias.push({
+            campo: `Quantity [${pdfLine.SupplierCatNum}]`,
+            pdf: pdfLine.Quantity,
+            sap: Number(sapLine.Quantity),
+          });
         }
       }
 
-      const dbTotal = dbItems.reduce((s, it) => s + Number(it.subtotal_item ?? 0), 0);
-      const resultado = {
-        ok: discrepancias.length === 0,
-        discrepancias,
-        total_db: dbTotal,
-        total_sap: sapOrder.DocTotal ?? 0,
-      };
-      const nuevoEstado = resultado.ok ? "VALIDADO" : "ERROR_VALIDACION";
+      // ── Resultado ────────────────────────────────────────────────────────
+      const ok = diferencias.length === 0;
+      const nuevoEstado = ok ? "VALIDADO" : "ERROR_VALIDACION";
+      const resultado = JSON.stringify({ ok, diferencias, docNum: sapOrder.DocNum });
 
       db.prepare(`
-        UPDATE pedidos_maestro SET estado=?, validacion_resultado=?, ts_validated=?, fase_actual=5
+        UPDATE pedidos_maestro SET estado=?, validacion_resultado=?, ts_validated=?, fase_actual=6
         WHERE orden_compra=?
-      `).run(nuevoEstado, JSON.stringify(resultado), now, oc);
-      logPipeline(db, oc, 6, "validador", resultado.ok ? "OK" : "ERROR", `${discrepancias.length} discrepancias`);
+      `).run(nuevoEstado, resultado, now, oc);
+      logPipeline(db, oc, 6, "reconcile", ok ? "OK" : "ERROR",
+        ok ? `DocNum ${sapOrder.DocNum} — sin diferencias` : `${diferencias.length} diferencia(s)`);
 
-      if (resultado.ok) {
+      if (ok) {
         result.procesados++;
-        result.detalles.push(`✓ OC ${oc} → VALIDADO`);
+        result.detalles.push(`✓ OC ${oc} → VALIDADO (DocNum ${sapOrder.DocNum})`);
       } else {
         result.errores++;
-        result.detalles.push(`⚠ OC ${oc} → ERROR_VALIDACION (${discrepancias.length} diferencias)`);
+        result.detalles.push(`⚠ OC ${oc} → ERROR_VALIDACION (${diferencias.length} diferencia(s)):`);
+        for (const d of diferencias) {
+          result.detalles.push(`    ${d.campo}: PDF='${d.pdf}' SAP='${d.sap}'`);
+        }
       }
     } catch (e) {
       db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_SAP', error_msg=? WHERE orden_compra=?`)
         .run(String(e).slice(0, 250), oc);
-      logPipeline(db, oc, 6, "validador", "ERROR", String(e).slice(0, 120));
+      logPipeline(db, oc, 6, "reconcile", "ERROR", String(e).slice(0, 120));
       result.errores++;
       result.detalles.push(`✗ OC ${oc}: ${String(e).slice(0, 120)}`);
     }
