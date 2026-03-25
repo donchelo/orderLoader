@@ -30,6 +30,9 @@ export interface Config {
 
   // NIT → CardCode mapping
   nitToCardCode: Record<string, string>;
+
+  // Cliente → keywords para clasificar correos reenviados
+  clientKeywords: Record<string, string[]>;
 }
 
 let _config: Config | null = null;
@@ -79,8 +82,14 @@ export function getConfig(): Config {
 
     nitToCardCode: {
       "890924167-6": "C_HERMECO",
-      "800069933": "C_COMODIN",
-      "9008516551": "C_EXITO",
+      "800069933":   "CN800069933",
+      "9008516551":  "C_EXITO",
+    },
+
+    clientKeywords: {
+      "Comodin": ["gco", "comodin", "americanino", "800069933", "gco.com.co"],
+      "Hermeco": ["hermeco", "offcorss", "890924167", "offcorss.com"],
+      "Exito":   ["exito", "grupo-exito", "9008516551", "grupo-exito.com"],
     },
   };
 

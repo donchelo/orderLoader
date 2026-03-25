@@ -14,6 +14,7 @@ import fs from "fs";
 import path from "path";
 import { getConfig } from "../config";
 import { getDb, logPipeline, ensureWorkspaceDirs } from "../db";
+import type { Config } from "../config";
 
 export interface StepResult {
   procesados: number;
@@ -26,12 +27,15 @@ function clean(text: string): string {
   return text.replace(/[^a-zA-Z0-9\-_.]/g, "_");
 }
 
-function getClientFolder(sender: string, subject: string): string {
-  const s = sender.toLowerCase();
-  const sub = subject.toLowerCase();
-  if (s.includes("offcorss.com") || sub.includes("hermeco") || sub.includes("offcorss")) return "Hermeco";
-  if (s.includes("gco.com.co") || sub.includes("comodin") || sub.includes("gco")) return "Comodin";
-  if (s.includes("grupo-exito.com") || sub.includes("exito")) return "Exito";
+function getClientFolder(sender: string, subject: string, body: string, config: Config): string {
+  // Buscar en texto combinado: remitente + asunto + cuerpo del correo (incluye forwards)
+  const haystack = `${sender} ${subject} ${body}`.toLowerCase();
+
+  for (const [cliente, keywords] of Object.entries(config.clientKeywords)) {
+    if (keywords.some(kw => haystack.includes(kw.toLowerCase()))) {
+      return cliente;
+    }
+  }
   return "Otros";
 }
 
@@ -67,13 +71,14 @@ export async function run(): Promise<StepResult> {
         envelope: true,
         source: true,
       })) {
-        if (!msg.flags?.has("\\Seen")) {
+        const from = msg.envelope?.from?.[0]?.address ?? "";
+        if (!msg.flags?.has("\\Seen") && from.toLowerCase() === "pedidos@tamaprint.com") {
           messages.push(msg);
         }
       }
 
       if (messages.length === 0) {
-        result.detalles.push("No hay correos nuevos en INBOX");
+        result.detalles.push("No hay correos nuevos de pedidos@tamaprint.com en INBOX");
         return result;
       }
 
@@ -86,7 +91,10 @@ export async function run(): Promise<StepResult> {
           const sender = envelope?.from?.[0]?.address ?? "";
           const dateHeader = envelope?.date?.toISOString() ?? new Date().toISOString();
 
-          const client_folder = getClientFolder(sender, subject);
+          // Usar el raw EML completo para clasificación (incluye headers de forwards y HTML codificado)
+          const rawEmail = msg.source ? msg.source.toString("utf8") : "";
+
+          const client_folder = getClientFolder(sender, subject, rawEmail, config);
           const ts = new Date()
             .toISOString()
             .replace(/[-:T]/g, (c) => (c === "T" ? "_" : c))
