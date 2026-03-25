@@ -69,7 +69,7 @@ Analyze the provided purchase order document and generate a JSON object that fai
   * Document date (DocDate) → Corresponds to the "fecha de elaboración" in the PDF
   * Tax date (TaxDate) → Corresponds to the "fecha de la factura" or invoice/tax reference date in the PDF
 * **Individual items**: For each product extract:
-  * Product code/reference (SupplierCatNum)
+  * Product code/reference (SupplierCatNum) — **remove any leading zeros** (e.g., "014007383001" → "14007383001")
   * Requested quantity (Quantity)
 
 ### 3. DATA TRANSFORMATION

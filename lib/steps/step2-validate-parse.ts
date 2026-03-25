@@ -1,8 +1,8 @@
 /**
- * Step 2: Validar coherencia de datos extraídos del PDF.
+ * Step 2: Validar el JSON SAP B1 extraído por el AI.
  *
- * Capa 1: Integridad de campos en DB (OC, NIT, fechas, items, totales).
- * Capa 2: Validación cruzada contra el PDF original (re-parsea y compara).
+ * Verifica formato, campos requeridos, SupplierCatNum sin ceros iniciales,
+ * cantidades enteras positivas y ausencia de duplicados.
  *
  * PARSED → PARSE_VALIDO | ERROR_PARSE
  */
@@ -12,6 +12,7 @@ import path from "path";
 import nodemailer from "nodemailer";
 import { getConfig } from "../config";
 import { getDb, logPipeline } from "../db";
+import type { SapB1Order } from "./step1-parse";
 
 export interface StepResult {
   procesados: number;
@@ -20,56 +21,82 @@ export interface StepResult {
   detalles: string[];
 }
 
-// ── Validation helpers ─────────────────────────────────────────────────────
+// ── Validaciones ────────────────────────────────────────────────────────────
 
-function validarOC(oc: string): string | null {
-  if (!oc?.trim()) return "orden_compra vacía";
-  if (!/^\d{4,15}$/.test(oc.trim())) return `orden_compra '${oc}' debe ser numérica de 4-15 dígitos`;
-  return null;
+function validarSapB1Json(order: SapB1Order): string[] {
+  const errores: string[] = [];
+
+  // Campos fijos
+  if (order.DocType !== "dDocument_Items")
+    errores.push(`DocType inválido: '${order.DocType}' (esperado 'dDocument_Items')`);
+  if (!/^CN\d+$/.test(order.CardCode ?? ""))
+    errores.push(`CardCode inválido: '${order.CardCode}' (debe ser CN seguido de dígitos)`);
+  if (!/^\d{4,15}$/.test(order.NumAtCard ?? ""))
+    errores.push(`NumAtCard inválido: '${order.NumAtCard}'`);
+
+  // Fechas YYYYMMDD
+  for (const [campo, valor] of [
+    ["DocDate", order.DocDate],
+    ["DocDueDate", order.DocDueDate],
+    ["TaxDate", order.TaxDate],
+  ] as [string, string][]) {
+    if (!/^\d{8}$/.test(valor ?? "")) {
+      errores.push(`${campo} inválido: '${valor}' (formato esperado YYYYMMDD)`);
+    } else {
+      const d = new Date(`${valor.slice(0, 4)}-${valor.slice(4, 6)}-${valor.slice(6)}`);
+      if (isNaN(d.getTime())) errores.push(`${campo} '${valor}' no es una fecha real`);
+    }
+  }
+
+  // DocumentLines
+  if (!Array.isArray(order.DocumentLines) || order.DocumentLines.length === 0) {
+    errores.push("DocumentLines vacío — sin ítems");
+    return errores;
+  }
+
+  const vistos = new Set<string>();
+  for (let i = 0; i < order.DocumentLines.length; i++) {
+    const line = order.DocumentLines[i];
+    const ref = `Línea ${i + 1}`;
+
+    // SupplierCatNum: no vacío, sin cero inicial
+    if (!line.SupplierCatNum?.trim()) {
+      errores.push(`${ref}: SupplierCatNum vacío`);
+    } else {
+      if (/^0/.test(line.SupplierCatNum))
+        errores.push(`${ref}: SupplierCatNum '${line.SupplierCatNum}' tiene cero inicial`);
+      if (vistos.has(line.SupplierCatNum))
+        errores.push(`${ref}: SupplierCatNum '${line.SupplierCatNum}' duplicado`);
+      vistos.add(line.SupplierCatNum);
+    }
+
+    // Quantity: entero positivo
+    if (!Number.isInteger(line.Quantity) || line.Quantity <= 0)
+      errores.push(`${ref} (${line.SupplierCatNum}): Quantity '${line.Quantity}' debe ser entero positivo`);
+  }
+
+  return errores;
 }
 
-function validarFecha(fechaStr: string | null, campo: string): [string | null, string | null] {
-  if (!fechaStr?.trim()) return [`${campo} vacía`, null];
-  let fecha: Date;
-  try { fecha = new Date(fechaStr.trim()); if (isNaN(fecha.getTime())) throw new Error(); }
-  catch { return [`${campo} '${fechaStr}' no es fecha ISO válida`, null]; }
-  const hoy = new Date();
-  const deltaDias = Math.floor((hoy.getTime() - fecha.getTime()) / 86_400_000);
-  if (campo === "fecha_solicitado") {
-    if (deltaDias > 365) return [`fecha_solicitado '${fechaStr}' tiene ${deltaDias} días (¿PDF antiguo?)`, null];
-    if (deltaDias < -60) return [`fecha_solicitado '${fechaStr}' está ${-deltaDias} días en el futuro`, null];
-  }
-  if (campo === "fecha_entrega_general") {
-    if (deltaDias > 0) return [null, `fecha_entrega '${fechaStr}' ya pasó (hace ${deltaDias} días)`];
-    if (deltaDias < -365) return [null, `fecha_entrega '${fechaStr}' está a ${-deltaDias} días (¿muy lejana?)`];
-  }
-  return [null, null];
-}
-
-// ── Email alert ────────────────────────────────────────────────────────────
+// ── Email alert ─────────────────────────────────────────────────────────────
 
 async function sendAlertEmail(subject: string, html: string): Promise<void> {
   const config = getConfig();
   if (!config.emailUser || !config.emailPass || !config.smtpHost) return;
-  const transporter = nodemailer.createTransport({
+  const t = nodemailer.createTransport({
     host: config.smtpHost, port: config.smtpPort,
     secure: false, auth: { user: config.emailUser, pass: config.emailPass },
   });
-  await transporter.sendMail({
-    from: config.emailUser, to: config.notifyAlertasEmail,
-    subject, html,
-  });
+  await t.sendMail({ from: config.emailUser, to: config.notifyAlertasEmail, subject, html });
 }
 
-function buildErrorHtml(oc: string, cliente: string, errores: string[], advertencias: string[]): string {
+function buildErrorHtml(oc: string, cliente: string, errores: string[]): string {
   const filas = errores.map(e =>
     `<tr style="background:#f8d7da"><td style="padding:6px 12px">❌</td><td style="padding:6px 12px">${e}</td></tr>`
-  ).join("") + advertencias.map(w =>
-    `<tr style="background:#fff3cd"><td style="padding:6px 12px">⚠</td><td style="padding:6px 12px">${w}</td></tr>`
   ).join("");
   return `<html><body style="font-family:Arial,sans-serif;font-size:13px">
   <div style="background:#dc3545;color:white;padding:14px 20px;border-radius:6px 6px 0 0">
-    <h2 style="margin:0">⚠ Error de validación PDF — OC ${oc} no será procesada</h2>
+    <h2 style="margin:0">Error de validación — OC ${oc} no será procesada</h2>
   </div>
   <div style="border:1px solid #ddd;padding:16px 20px">
     <p><b>Cliente:</b> ${cliente}</p>
@@ -82,7 +109,7 @@ function buildErrorHtml(oc: string, cliente: string, errores: string[], adverten
   </div></body></html>`;
 }
 
-// ── Main ───────────────────────────────────────────────────────────────────
+// ── Main ─────────────────────────────────────────────────────────────────────
 
 export async function run(): Promise<StepResult> {
   const result: StepResult = { procesados: 0, errores: 0, saltados: 0, detalles: [] };
@@ -100,96 +127,35 @@ export async function run(): Promise<StepResult> {
   for (const row of pendientes) {
     const oc = String(row.orden_compra);
     const cliente = String(row.cliente_nombre || "—");
-    const errores: string[] = [];
-    const advertencias: string[] = [];
 
-    // ── Capa 1: integridad de campos ─────────────────────────────────────
-    const errOC = validarOC(oc);
-    if (errOC) errores.push(errOC);
-    if (!row.nit_cliente) errores.push("nit_cliente vacío");
-    if (!row.cliente_nombre) errores.push("cliente_nombre vacío");
-    if (!row.subtotal || Number(row.subtotal) <= 0) errores.push(`subtotal inválido: ${row.subtotal}`);
-
-    const [errF] = validarFecha(row.fecha_solicitado as string, "fecha_solicitado");
-    if (errF) errores.push(errF);
-    const [errFE, warnFE] = validarFecha(row.fecha_entrega_general as string, "fecha_entrega_general");
-    if (errFE) advertencias.push(errFE);
-    if (warnFE) advertencias.push(warnFE);
-
-    const items = db.prepare(
-      "SELECT * FROM pedidos_detalle WHERE orden_compra = ?"
-    ).all(oc) as Array<Record<string, number | string>>;
-
-    if (!items.length) {
-      errores.push("Sin ítems en pedidos_detalle");
-    } else {
-      if (items.length === 1) advertencias.push("Solo 1 ítem — verificar parseo");
-
-      // Detectar modo AI: todos los precios son 0 (Comodin parseado con IA)
-      const todosPrecios0 = items.every(it => Number(it.precio_unitario || 0) === 0);
-
-      let suma = 0;
-      for (const it of items) {
-        const codigo = String(it.codigo_producto || "").trim();
-        const cant = Number(it.cantidad || 0);
-        const precio = Number(it.precio_unitario || 0);
-        const subDb = Number(it.subtotal_item || 0);
-        const desc = String(it.descripcion || "");
-        if (!codigo) errores.push(`Ítem sin codigo_producto (${desc.slice(0, 40)})`);
-        if (cant <= 0) errores.push(`Ítem '${codigo}': cantidad ${cant} inválida`);
-        if (!todosPrecios0) {
-          if (precio <= 0) errores.push(`Ítem '${codigo}': precio ${precio} inválido`);
-          if (cant > 0 && precio > 0 && Math.abs(cant * precio - subDb) > 1) {
-            errores.push(`Ítem '${codigo}': subtotal_item $${subDb.toFixed(0)} ≠ cant×precio $${(cant*precio).toFixed(0)}`);
-          }
-        }
-        if (desc.toLowerCase().includes("revisar")) {
-          advertencias.push(`Ítem '${codigo}': descripción requiere revisión`);
-        }
-        suma += cant * precio;
-      }
-
-      if (todosPrecios0) {
-        advertencias.push("Precios no disponibles — extraídos por IA (se completarán en step4)");
-      } else {
-        const subtotal = Number(row.subtotal || 0);
-        if (subtotal > 0) {
-          const diffPct = Math.abs(suma - subtotal) / subtotal * 100;
-          if (diffPct > 5) {
-            errores.push(`Total no cuadra: suma ítems $${suma.toFixed(0)} vs subtotal $${subtotal.toFixed(0)} (${diffPct.toFixed(1)}%)`);
-          }
-        }
-      }
-    }
-
-    // ── Capa 2: validación cruzada contra PDF original ────────────────────
+    // Cargar data_extraida.json
     const carpeta = row.carpeta_origen as string | null;
-    if (carpeta && fs.existsSync(carpeta)) {
-      const pdfs = fs.readdirSync(carpeta).filter(f => f.toLowerCase().endsWith(".pdf"));
-      if (pdfs.length) {
-        try {
-          const pdfParseMod = await import("pdf-parse");
-          const pdfParseFn = pdfParseMod as unknown as (buf: Buffer) => Promise<{ text: string }>;
-          const buf = fs.readFileSync(path.join(carpeta, pdfs[0]));
-          const parsed = await pdfParseFn(buf);
-          // Re-run the appropriate parser (dynamic import to avoid circular deps)
-          await import("./step1-parse");
-          // We just check if the PDF text has the OC number present
-          if (!parsed.text.includes(oc)) {
-            errores.push(`OC ${oc} no encontrada en el texto del PDF original`);
-          }
-        } catch (e) {
-          advertencias.push(`No se pudo re-parsear PDF: ${String(e).slice(0, 80)}`);
-        }
-      } else {
-        advertencias.push("PDF original no disponible para validación cruzada");
-      }
-    } else {
-      advertencias.push("Carpeta origen no disponible — sin validación cruzada");
+    const markerPath = carpeta ? path.join(carpeta, "data_extraida.json") : null;
+
+    if (!markerPath || !fs.existsSync(markerPath)) {
+      db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_PARSE', error_msg=? WHERE orden_compra=?`)
+        .run("data_extraida.json no encontrado", oc);
+      logPipeline(db, oc, 2, "validate_parsed", "ERROR", "data_extraida.json no encontrado");
+      result.errores++;
+      result.detalles.push(`✗ OC ${oc} → ERROR_PARSE: data_extraida.json no encontrado`);
+      continue;
     }
 
-    // ── Resultado ─────────────────────────────────────────────────────────
-    const resultado = JSON.stringify({ errores, advertencias, n_items: items.length });
+    let order: SapB1Order;
+    try {
+      order = JSON.parse(fs.readFileSync(markerPath, "utf8")) as SapB1Order;
+    } catch (e) {
+      db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_PARSE', error_msg=? WHERE orden_compra=?`)
+        .run(`data_extraida.json no es JSON válido: ${String(e).slice(0, 80)}`, oc);
+      logPipeline(db, oc, 2, "validate_parsed", "ERROR", "JSON inválido");
+      result.errores++;
+      result.detalles.push(`✗ OC ${oc} → ERROR_PARSE: JSON inválido`);
+      continue;
+    }
+
+    const errores = validarSapB1Json(order);
+    const n = order.DocumentLines?.length ?? 0;
+    const resultado = JSON.stringify({ errores, n_items: n });
 
     if (errores.length) {
       db.prepare(`
@@ -199,21 +165,15 @@ export async function run(): Promise<StepResult> {
       logPipeline(db, oc, 2, "validate_parsed", "ERROR", errores[0].slice(0, 120));
       result.errores++;
       result.detalles.push(`✗ OC ${oc} → ERROR_PARSE: ${errores[0]}`);
-      try {
-        await sendAlertEmail(
-          `[ERROR OrderLoader] OC ${oc} — Validación PDF fallida`,
-          buildErrorHtml(oc, cliente, errores, advertencias)
-        );
-      } catch { /* ignore email errors */ }
+      try { await sendAlertEmail(`[ERROR OrderLoader] OC ${oc} — Validación fallida`, buildErrorHtml(oc, cliente, errores)); } catch { /* ignore */ }
     } else {
-      const nota = advertencias.length ? ` | ${advertencias.length} advertencia(s)` : "";
       db.prepare(`
         UPDATE pedidos_maestro SET estado='PARSE_VALIDO', fase_actual=2, error_msg=NULL, validacion_resultado=?
         WHERE orden_compra=?
       `).run(resultado, oc);
-      logPipeline(db, oc, 2, "validate_parsed", "OK", `${items.length} ítem(s) OK${nota}`);
+      logPipeline(db, oc, 2, "validate_parsed", "OK", `${n} ítem(s) OK`);
       result.procesados++;
-      result.detalles.push(`✓ OC ${oc} → PARSE_VALIDO (${items.length} ítem(s)${nota})`);
+      result.detalles.push(`✓ OC ${oc} → PARSE_VALIDO (${n} ítems)`);
     }
   }
 
