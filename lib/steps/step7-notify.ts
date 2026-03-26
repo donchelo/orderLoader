@@ -162,9 +162,9 @@ export async function run(): Promise<StepResult> {
         await imap.connect();
         const lock = await imap.getMailboxLock("INBOX");
         try {
-          try { await imap.mailboxCreate("INBOX.Ingresados"); } catch { /* ya existe */ }
-          await imap.messageMove(uids.map(String).join(","), "INBOX.Ingresados");
-          result.detalles.push(`✓ ${uids.length} correo(s) movidos a INBOX.Ingresados`);
+          try { await imap.mailboxCreate("INBOX/Ingresados"); } catch { /* ya existe */ }
+          await imap.messageMove(uids.map(String).join(","), "INBOX/Ingresados", { uid: true });
+          result.detalles.push(`✓ ${uids.length} correo(s) movidos a INBOX/Ingresados`);
         } finally {
           lock.release();
         }

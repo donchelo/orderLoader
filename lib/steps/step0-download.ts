@@ -28,14 +28,22 @@ function clean(text: string): string {
 }
 
 function getClientFolder(sender: string, subject: string, body: string, config: Config): string {
-  // Buscar en texto combinado: remitente + asunto + cuerpo del correo (incluye forwards)
-  const haystack = `${sender} ${subject} ${body}`.toLowerCase();
-
+  // 1. Prioridad: buscar en asunto (más confiable, evita falsos positivos del cuerpo)
+  const subjectLower = `${sender} ${subject}`.toLowerCase();
   for (const [cliente, keywords] of Object.entries(config.clientKeywords)) {
-    if (keywords.some(kw => haystack.includes(kw.toLowerCase()))) {
+    if (keywords.some(kw => subjectLower.includes(kw.toLowerCase()))) {
       return cliente;
     }
   }
+
+  // 2. Fallback: buscar en cuerpo completo del correo
+  const bodyLower = body.toLowerCase();
+  for (const [cliente, keywords] of Object.entries(config.clientKeywords)) {
+    if (keywords.some(kw => bodyLower.includes(kw.toLowerCase()))) {
+      return cliente;
+    }
+  }
+
   return "Otros";
 }
 

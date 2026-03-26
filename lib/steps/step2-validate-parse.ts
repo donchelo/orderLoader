@@ -23,7 +23,7 @@ export interface StepResult {
 
 // ── Validaciones ────────────────────────────────────────────────────────────
 
-function validarSapB1Json(order: SapB1Order): string[] {
+function validarSapB1Json(order: SapB1Order, clienteNombre: string): string[] {
   const errores: string[] = [];
 
   // Campos fijos
@@ -59,11 +59,11 @@ function validarSapB1Json(order: SapB1Order): string[] {
     const line = order.DocumentLines[i];
     const ref = `Línea ${i + 1}`;
 
-    // SupplierCatNum: no vacío, sin cero inicial
+    // SupplierCatNum: no vacío; sin cero inicial solo para Comodin
     if (!line.SupplierCatNum?.trim()) {
       errores.push(`${ref}: SupplierCatNum vacío`);
     } else {
-      if (/^0/.test(line.SupplierCatNum))
+      if (clienteNombre !== "EXITO" && /^0/.test(line.SupplierCatNum))
         errores.push(`${ref}: SupplierCatNum '${line.SupplierCatNum}' tiene cero inicial`);
       if (vistos.has(line.SupplierCatNum))
         errores.push(`${ref}: SupplierCatNum '${line.SupplierCatNum}' duplicado`);
@@ -153,7 +153,7 @@ export async function run(): Promise<StepResult> {
       continue;
     }
 
-    const errores = validarSapB1Json(order);
+    const errores = validarSapB1Json(order, cliente);
     const n = order.DocumentLines?.length ?? 0;
     const resultado = JSON.stringify({ errores, n_items: n });
 

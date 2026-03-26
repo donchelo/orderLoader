@@ -83,7 +83,7 @@ export function getConfig(): Config {
     sapPriceTolerance: parseFloat(process.env.SAP_B1_PRICE_TOLERANCE ?? "2.0"),
 
     nitToCardCode: {
-      "890924167-6": "C_HERMECO",
+      "890924167":   "CN890924167",
       "800069933":   "CN800069933",
       "890900608":   "CN890900608",
     },
