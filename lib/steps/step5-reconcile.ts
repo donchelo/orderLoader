@@ -1,8 +1,9 @@
 /**
- * Step 6: Reconciliar PDF vs Orden de Venta en SAP B1.
+ * Step 5: Reconciliar PDF vs Orden de Venta en SAP B1.
  *
  * Compara data_extraida.json (fuente: PDF) contra Orders(DocEntry) en SAP.
- * Registra todas las diferencias encontradas para que step7 las notifique.
+ * Registra todas las diferencias (artículos faltantes, cantidades, precios)
+ * en validacion_resultado para que step6 las incluya en la notificación.
  *
  * SAP_MONTADO → VALIDADO | ERROR_VALIDACION
  */
@@ -70,7 +71,7 @@ export async function run(): Promise<StepResult> {
     if (!markerPath || !fs.existsSync(markerPath)) {
       db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_VALIDACION', error_msg=? WHERE orden_compra=?`)
         .run("data_extraida.json no encontrado para reconciliación", oc);
-      logPipeline(db, oc, 6, "reconcile", "ERROR", "data_extraida.json no encontrado");
+      logPipeline(db, oc, 5, "reconcile", "ERROR", "data_extraida.json no encontrado");
       result.errores++;
       result.detalles.push(`✗ OC ${oc}: data_extraida.json no encontrado`);
       continue;
@@ -82,7 +83,7 @@ export async function run(): Promise<StepResult> {
     } catch (e) {
       db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_VALIDACION', error_msg=? WHERE orden_compra=?`)
         .run(`data_extraida.json inválido: ${String(e).slice(0, 80)}`, oc);
-      logPipeline(db, oc, 6, "reconcile", "ERROR", "JSON inválido");
+      logPipeline(db, oc, 5, "reconcile", "ERROR", "JSON inválido");
       result.errores++;
       result.detalles.push(`✗ OC ${oc}: data_extraida.json inválido`);
       continue;
@@ -119,23 +120,55 @@ export async function run(): Promise<StepResult> {
         });
       }
 
+      // ── Artículos excluidos en step4 (upload) ───────────────────────────
+      const itemsExcluidosCodes: string[] = row.items_excluidos
+        ? JSON.parse(String(row.items_excluidos))
+        : [];
+      for (const code of itemsExcluidosCodes) {
+        diferencias.push({
+          campo: `Artículo no subido a SAP`,
+          pdf: code,
+          sap: "excluido — SAP lo rechazó en el upload",
+        });
+      }
+
       // ── Comparar cada línea por SupplierCatNum ───────────────────────────
       for (const pdfLine of pdfData.DocumentLines) {
+        if (itemsExcluidosCodes.includes(String(pdfLine.SupplierCatNum))) continue;
+
         const sapLine = sapLines.find(
           l => String(l.SupplierCatNum ?? "") === String(pdfLine.SupplierCatNum)
         );
         if (!sapLine) {
           diferencias.push({
-            campo: `SupplierCatNum ${pdfLine.SupplierCatNum}`,
-            pdf: "presente",
-            sap: "no encontrado en SAP",
+            campo: `Artículo faltante en SAP`,
+            pdf: pdfLine.SupplierCatNum,
+            sap: "no encontrado",
           });
-        } else if (Math.abs(Number(sapLine.Quantity ?? 0) - pdfLine.Quantity) > 0.001) {
+          continue;
+        }
+
+        // Cantidad
+        if (Math.abs(Number(sapLine.Quantity ?? 0) - pdfLine.Quantity) > 0.001) {
           diferencias.push({
-            campo: `Quantity [${pdfLine.SupplierCatNum}]`,
+            campo: `Cantidad [${pdfLine.SupplierCatNum}]`,
             pdf: pdfLine.Quantity,
             sap: Number(sapLine.Quantity),
           });
+        }
+
+        // Precio (SAP puede usar "Price" o "UnitPrice")
+        const pdfPrice = pdfLine.UnitPrice ?? 0;
+        const sapPrice = Number(sapLine.Price ?? sapLine.UnitPrice ?? 0);
+        if (pdfPrice > 0 && sapPrice > 0) {
+          const diff = Math.abs(pdfPrice - sapPrice) / Math.max(pdfPrice, 1);
+          if (diff > 0.01) {
+            diferencias.push({
+              campo: `Precio [${pdfLine.SupplierCatNum}]`,
+              pdf: pdfPrice,
+              sap: sapPrice,
+            });
+          }
         }
       }
 
@@ -145,10 +178,10 @@ export async function run(): Promise<StepResult> {
       const resultado = JSON.stringify({ ok, diferencias, docNum: sapOrder.DocNum });
 
       db.prepare(`
-        UPDATE pedidos_maestro SET estado=?, validacion_resultado=?, ts_validated=?, fase_actual=6
+        UPDATE pedidos_maestro SET estado=?, validacion_resultado=?, ts_validated=?, fase_actual=5
         WHERE orden_compra=?
       `).run(nuevoEstado, resultado, now, oc);
-      logPipeline(db, oc, 6, "reconcile", ok ? "OK" : "ERROR",
+      logPipeline(db, oc, 5, "reconcile", ok ? "OK" : "ERROR",
         ok ? `DocNum ${sapOrder.DocNum} — sin diferencias` : `${diferencias.length} diferencia(s)`);
 
       if (ok) {
@@ -164,7 +197,7 @@ export async function run(): Promise<StepResult> {
     } catch (e) {
       db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_SAP', error_msg=? WHERE orden_compra=?`)
         .run(String(e).slice(0, 250), oc);
-      logPipeline(db, oc, 6, "reconcile", "ERROR", String(e).slice(0, 120));
+      logPipeline(db, oc, 5, "reconcile", "ERROR", String(e).slice(0, 120));
       result.errores++;
       result.detalles.push(`✗ OC ${oc}: ${String(e).slice(0, 120)}`);
     }

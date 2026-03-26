@@ -205,7 +205,7 @@ export async function run(): Promise<StepResult> {
           try {
             const db = getDb();
             logPipeline(db, folderName, 0, "download", "OK",
-              `Correo de ${client_folder} descargado: ${pdfCount} PDF(s)`);
+              `UID=${msg.uid} cliente=${client_folder} PDFs=${pdfCount}`);
           } catch {
             /* DB might not exist yet */
           }

@@ -10,6 +10,7 @@ import path from "path";
 import Anthropic from "@anthropic-ai/sdk";
 import { getConfig } from "../config";
 import { getDb, logPipeline } from "../db";
+import { sendAlertEmail } from "../mailer";
 
 export interface StepResult {
   procesados: number;
@@ -23,6 +24,8 @@ export interface StepResult {
 export interface DocumentLine {
   SupplierCatNum: string;
   Quantity: number;
+  UnitPrice?: number;      // Extraído del PDF para referencia/validación — nunca se envía a SAP
+  DeliveryDate?: string;   // Fecha de entrega por línea (YYYYMMDD). Si no existe en el PDF, hereda DocDueDate del pedido
 }
 
 export interface SapB1Order {
@@ -73,6 +76,8 @@ Analyze the provided purchase order document and generate a JSON object that fai
 * **Individual items**: For each product extract:
   * Product code/reference (SupplierCatNum) — **remove any leading zeros** (e.g., "014007383001" → "14007383001")
   * Requested quantity (Quantity)
+  * Unit price (UnitPrice) — the price per unit as printed in the document
+  * Line delivery date (DeliveryDate) — the specific delivery date for this line if printed. If the line has no individual date, use the general order delivery date (DocDueDate). Always in YYYYMMDD format.
 
 ### 3. DATA TRANSFORMATION
 Apply these mandatory conversion rules:
@@ -84,12 +89,16 @@ Apply these mandatory conversion rules:
 **DocDate**: Always use today's date at time of processing in YYYYMMDD format (NOT any date from the document)
 
 **Numbers** (CRITICAL FOR CONSISTENCY):
-* Remove thousand separators: "5.300" → 5300
+* Colombian format uses "." as thousands separator and "," as decimal separator
 * Quantity (Quantity): Values like "1.000" mean one thousand units, not one. Remove the thousand separator and convert to integer.
   * "1.000" → 1000
   * "9.000" → 9000
   * "126.000" → 126000
 * For integers: Use whole numbers without decimals: 6000 (not 6000.00)
+* UnitPrice (UnitPrice): Decimal number. Remove thousands separator (dot) and convert decimal comma to decimal point.
+  * "12.500,50" → 12500.50
+  * "8.900" → 8900
+  * Use 0 if the price is not printed in the document.
 
 **Missing fields**: Use empty string ""
 
@@ -109,6 +118,8 @@ Before generating the response, verify:
 * CardCode is "CN800069933"
 * DocType is "dDocument_Items"
 * Quantities correctly reflect thousands (e.g., "126.000" → 126000)
+* UnitPrice is a decimal number per item (0 if not present in document)
+* DeliveryDate is present on every line in YYYYMMDD format (line-specific date or DocDueDate if not specified per line)
 * Comments contains the verbatim observations from the document (or "" if none)
 * Valid JSON syntax (no trailing commas, proper brackets)
 
@@ -149,6 +160,8 @@ Extract the following from the document:
 - **Individual line items**: For each product:
   - Supplier catalog number / product code
   - Ordered quantity
+  - Unit price as printed in the document
+  - Line delivery date — the specific delivery date for this line if printed. If the line has no individual date, use the general order delivery date (DocDueDate). Always in YYYYMMDD format.
 
 ### 3. DATA TRANSFORMATION
 
@@ -166,6 +179,8 @@ Extract the following from the document:
 
 **Quantities**: Whole integers only — \`6000\` not \`6000.00\`. Remove thousand separators: \`"6.000"\` → \`6000\`.
 
+**UnitPrice**: Decimal number. Colombian format uses "." as thousands separator and "," as decimal separator. Remove thousands separator (dot) and convert decimal comma to decimal point. Example: "12.500,50" → 12500.50. Use 0 if not printed.
+
 **Missing fields**: Use empty string \`""\`
 
 ### 4. FIELD MAPPING
@@ -181,6 +196,8 @@ Extract the following from the document:
 | Observaciones / Remarks section | \`Comments\`          | Verbatim text, "" if absent    |
 | Item product/catalog code       | \`DocumentLines[].SupplierCatNum\` | String              |
 | Item quantity                   | \`DocumentLines[].Quantity\`       | Integer             |
+| Item unit price                 | \`DocumentLines[].UnitPrice\`      | Decimal, 0 if absent|
+| Item delivery date              | \`DocumentLines[].DeliveryDate\`   | YYYYMMDD — line-specific date or DocDueDate if not specified per line |
 
 ### 5. FINAL VALIDATION
 Before responding, verify:
@@ -190,8 +207,9 @@ Before responding, verify:
 - ✅ \`CardCode\` is exactly \`"CN890900608"\`
 - ✅ \`DocType\` is exactly \`"dDocument_Items"\`
 - ✅ \`Comments\` contains verbatim observations from the document (or "" if none)
-- ✅ \`DocumentLines\` contains one entry per unique line item
+- ✅ \`DocumentLines\` contains one entry per unique line item with UnitPrice and DeliveryDate
 - ✅ All quantities are whole integers without decimals
+- ✅ All DeliveryDate values are in YYYYMMDD format
 - ✅ Valid JSON syntax — no trailing commas, no extra fields
 
 ## RESPONSE FORMAT
@@ -222,6 +240,8 @@ Analyze the provided purchase order document and generate a JSON object followin
 - **Line items**: For each product extract:
   - Supplier catalog number / product code (SupplierCatNum) — **remove any leading zeros** (e.g., "0201931" → "201931")
   - Ordered quantity (Quantity)
+  - Unit price as printed in the document (UnitPrice)
+  - Line delivery date (DeliveryDate) — the specific delivery date for this line if printed. If the line has no individual date, use the general order delivery date (DocDueDate). Always in YYYYMMDD format.
 
 ### 3. DATA TRANSFORMATION
 
@@ -238,6 +258,8 @@ Analyze the provided purchase order document and generate a JSON object followin
 
 **Quantities**: Use whole numbers without decimals (6000 not 6000.00)
 
+**UnitPrice**: Decimal number. Colombian format uses "." as thousands separator and "," as decimal separator. Remove thousands separator (dot) and convert decimal comma to decimal point. Example: "12.500,50" → 12500.50. Use 0 if not printed.
+
 **Missing fields**: Use empty string \`""\`
 
 ### 4. JSON FORMATTING RULES
@@ -252,7 +274,8 @@ Before generating the response, verify:
 - ✅ CardCode starts with "CN" followed by digits only
 - ✅ All dates are in YYYYMMDD format (8 digits, no separators)
 - ✅ Quantities are whole numbers (no decimals)
-- ✅ DocumentLines array contains one object per unique line item
+- ✅ DocumentLines array contains one object per unique line item with UnitPrice and DeliveryDate
+- ✅ All DeliveryDate values are in YYYYMMDD format (line-specific date or DocDueDate if not specified per line)
 - ✅ SupplierCatNum values have NO leading zeros (e.g., "0201931" → "201931")
 - ✅ Comments contains verbatim observations from the document (or "" if none)
 - ✅ Valid JSON syntax
@@ -318,11 +341,56 @@ function insertSapOrder(
   const ins = db.prepare(`
     INSERT INTO pedidos_detalle
       (orden_compra, codigo_producto, descripcion, cantidad, precio_unitario, subtotal_item, fecha_entrega)
-    VALUES (?, ?, '', ?, 0, 0, ?)
+    VALUES (?, ?, '', ?, ?, ?, ?)
   `);
   for (const line of order.DocumentLines) {
-    ins.run(order.NumAtCard, line.SupplierCatNum, line.Quantity, fechaG);
+    const precio = line.UnitPrice ?? 0;
+    const subtotal = precio * line.Quantity;
+    const fechaLinea = line.DeliveryDate ? yyyymmddToIso(line.DeliveryDate) : fechaG;
+    ins.run(order.NumAtCard, line.SupplierCatNum, line.Quantity, precio, subtotal, fechaLinea);
   }
+}
+
+// ── Identificación Tamaprint ──────────────────────────────────────────────────
+// Cualquier variante del NIT o nombre que aparezca en un PDF dirigido a nosotros.
+const TAMAPRINT_KEYWORDS = [
+  "tamaprint",
+  "tama print",
+  "900851655",   // NIT sin dígito de verificación
+  "9008516551",  // NIT con dígito de verificación
+  "900.851.655", // NIT con puntos
+];
+
+function esDirigidoATamaprint(pdfText: string): boolean {
+  const lower = pdfText.toLowerCase();
+  return TAMAPRINT_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+async function notificarPDFNoTamaprint(
+  cliente: string,
+  carpeta: string,
+  pdfNombre: string,
+): Promise<void> {
+  const fecha = new Date().toLocaleString("es-CO", { timeZone: "America/Bogota" });
+  await sendAlertEmail(
+    `[OrderLoader] ⚠ PDF no dirigido a Tamaprint — ${cliente}/${carpeta}`,
+    `<html><body style="font-family:Arial,sans-serif;font-size:13px">
+      <h3 style="color:#856404;background:#fff3cd;padding:10px;border-radius:4px">
+        ⚠ PDF recibido no está dirigido a Tamaprint
+      </h3>
+      <table style="border-collapse:collapse">
+        <tr><td style="padding:4px 12px 4px 0"><b>Cliente:</b></td><td>${cliente}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Carpeta:</b></td><td>${carpeta}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Archivo:</b></td><td>${pdfNombre}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><b>Fecha:</b></td><td>${fecha}</td></tr>
+      </table>
+      <p style="margin-top:16px">
+        El PDF fue recibido pero <b>no contiene el NIT ni el nombre de Tamaprint</b> como proveedor.<br>
+        Verificar manualmente si corresponde a otro proveedor.
+      </p>
+      <p style="color:#888;font-size:11px;margin-top:16px">Generado automáticamente por OrderLoader Pipeline</p>
+    </body></html>`,
+  );
 }
 
 // ── Clientes soportados ───────────────────────────────────────────────────────
@@ -346,7 +414,9 @@ export async function run(): Promise<StepResult> {
 
   const db = getDb();
   const ESTADOS_AVANZADOS = new Set([
-    "SAP_NUEVO", "ITEMS_OK", "SAP_MONTADO", "CERRADO",
+    "PARSE_VALIDO", "SAP_NUEVO", "SAP_MONTADO",
+    "VALIDADO", "ERROR_VALIDACION",
+    "NOTIFICADO", "CERRADO",
     "ERROR_DUPLICADO", "ERROR_ITEMS", "ERROR_SAP",
   ]);
 
@@ -358,62 +428,130 @@ export async function run(): Promise<StepResult> {
       const carpetaPath = path.join(clienteDir, carpetaNombre);
       if (!fs.statSync(carpetaPath).isDirectory()) continue;
 
-      const marker = path.join(carpetaPath, "data_extraida.json");
-      if (fs.existsSync(marker)) { result.saltados++; continue; }
+      // Solo carpetas de correo (tienen EML). Los sub-folders de OC no lo tienen.
+      if (!fs.existsSync(path.join(carpetaPath, "correo_original.eml"))) continue;
 
       const pdfs = fs.readdirSync(carpetaPath).filter(f => f.toLowerCase().endsWith(".pdf"));
       if (!pdfs.length) continue;
 
-      const pdfPath = path.join(carpetaPath, pdfs[0]);
-      result.detalles.push(`Procesando: ${carpeta}/${carpetaNombre}/${pdfs[0]}`);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const pdfParseFn = require("pdf-parse/lib/pdf-parse") as (buf: Buffer) => Promise<{ text: string }>;
 
-      try {
-        const buffer = fs.readFileSync(pdfPath);
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const pdfParseFn = require("pdf-parse/lib/pdf-parse") as (buf: Buffer) => Promise<{ text: string }>;
-        const parsed = await pdfParseFn(buffer);
+      // Procesar TODOS los PDFs del correo — cada uno puede ser una OC distinta
+      for (const pdfFile of pdfs) {
+        const skipMarker = path.join(carpetaPath, `${pdfFile}.skip`);
+        const doneMarker = path.join(carpetaPath, `${pdfFile}.done`);
 
-        const [order, status] = await parseWithAI(parsed.text, prompt);
-
-        if (!order) {
-          result.errores++;
-          result.detalles.push(`  ✗ ${status}`);
-          logPipeline(db, carpetaNombre, 1, "parse", "ERROR", `AI parse fallido: ${status}`);
-          continue;
-        }
-
-        // DocDate siempre es la fecha de hoy — no depender del AI
-        const hoy = new Date();
-        order.DocDate = `${hoy.getFullYear()}${String(hoy.getMonth()+1).padStart(2,"0")}${String(hoy.getDate()).padStart(2,"0")}`;
-
-        const existente = db.prepare(
-          "SELECT estado FROM pedidos_maestro WHERE orden_compra = ?"
-        ).get(order.NumAtCard) as { estado: string } | undefined;
-
-        if (existente && ESTADOS_AVANZADOS.has(existente.estado)) {
+        // Idempotencia por PDF: ya fue procesado o descartado explícitamente
+        if (fs.existsSync(skipMarker) || fs.existsSync(doneMarker)) {
           result.saltados++;
-          result.detalles.push(`  [skip] OC ${order.NumAtCard} ya en ${existente.estado}`);
-          fs.writeFileSync(marker, JSON.stringify(
-            { ...order, skip_reason: existente.estado, ts: new Date().toISOString() }, null, 2
-          ));
           continue;
         }
 
-        const tx = db.transaction(() => {
-          insertSapOrder(db, order, carpetaPath, nombre);
-          logPipeline(db, order.NumAtCard, 1, "parse", "OK", `PDF: ${pdfs[0]}`);
-        });
-        tx();
+        const retriesPath = path.join(carpetaPath, `${pdfFile}.retries`);
+        const errorPath   = path.join(carpetaPath, `${pdfFile}.error`);
 
-        fs.writeFileSync(marker, JSON.stringify(
-          { ...order, pdf: pdfs[0], ts: new Date().toISOString() }, null, 2
-        ));
+        if (fs.existsSync(errorPath)) {
+          result.saltados++;
+          result.detalles.push(`⚠ ${pdfFile}: omitido (max reintentos AI alcanzados)`);
+          continue;
+        }
 
-        result.procesados++;
-        result.detalles.push(`  ✓ OC ${order.NumAtCard} → PARSED (${order.DocumentLines.length} items)`);
-      } catch (e) {
-        result.errores++;
-        result.detalles.push(`  ✗ Error: ${String(e)}`);
+        result.detalles.push(`Procesando: ${carpeta}/${carpetaNombre}/${pdfFile}`);
+
+        try {
+          const buffer = fs.readFileSync(path.join(carpetaPath, pdfFile));
+          const parsed = await pdfParseFn(buffer);
+
+          // PDF no dirigido a Tamaprint → silencio + marker de skip + alerta
+          if (!esDirigidoATamaprint(parsed.text)) {
+            result.saltados++;
+            result.detalles.push(`  → No dirigido a Tamaprint — omitido`);
+            logPipeline(db, carpetaNombre, 1, "parse", "OK", `${pdfFile}: no es pedido Tamaprint`);
+            fs.writeFileSync(skipMarker, "");
+            await notificarPDFNoTamaprint(carpeta, carpetaNombre, pdfFile).catch(() => {});
+            continue;
+          }
+
+          const [order, status] = await parseWithAI(parsed.text, prompt);
+
+          if (!order) {
+            result.errores++;
+            result.detalles.push(`  ✗ ${status}`);
+            logPipeline(db, carpetaNombre, 1, "parse", "ERROR", `AI parse fallido: ${status}`);
+            const retries = fs.existsSync(retriesPath)
+              ? parseInt(fs.readFileSync(retriesPath, "utf8") || "0") + 1 : 1;
+            if (retries >= 3) {
+              fs.writeFileSync(errorPath, status);
+              fs.rmSync(retriesPath, { force: true });
+              await sendAlertEmail(
+                `[ERROR OrderLoader] PDF ${pdfFile} — fallo de parseo repetido`,
+                `<p>El archivo <b>${pdfFile}</b> falló ${retries} veces. Último error:</p><pre>${status}</pre>`
+              ).catch(() => {});
+            } else {
+              fs.writeFileSync(retriesPath, String(retries));
+            }
+            continue;
+          }
+
+          // DocDate siempre es la fecha de hoy — no depender del AI
+          const hoy = new Date();
+          order.DocDate = `${hoy.getFullYear()}${String(hoy.getMonth()+1).padStart(2,"0")}${String(hoy.getDate()).padStart(2,"0")}`;
+
+          const existente = db.prepare(
+            "SELECT estado FROM pedidos_maestro WHERE orden_compra = ?"
+          ).get(order.NumAtCard) as { estado: string } | undefined;
+
+          if (existente && ESTADOS_AVANZADOS.has(existente.estado)) {
+            result.saltados++;
+            result.detalles.push(`  [skip] OC ${order.NumAtCard} ya en ${existente.estado}`);
+            fs.writeFileSync(doneMarker, order.NumAtCard);
+            continue;
+          }
+
+          // Sub-folder por OC: carpeta_origen independiente para cada pedido del correo
+          const ocFolder = path.join(carpetaPath, order.NumAtCard);
+          fs.mkdirSync(ocFolder, { recursive: true });
+
+          // Copiar correo_metadata.json al sub-folder (step7 lo necesita para IMAP)
+          const metaSrc = path.join(carpetaPath, "correo_metadata.json");
+          if (fs.existsSync(metaSrc)) {
+            fs.copyFileSync(metaSrc, path.join(ocFolder, "correo_metadata.json"));
+          }
+
+          const tx = db.transaction(() => {
+            insertSapOrder(db, order, ocFolder, nombre); // carpeta_origen = sub-folder de la OC
+            logPipeline(db, order.NumAtCard, 1, "parse", "OK", `PDF: ${pdfFile}`);
+          });
+          tx();
+
+          fs.writeFileSync(
+            path.join(ocFolder, "data_extraida.json"),
+            JSON.stringify({ ...order, pdf: pdfFile, ts: new Date().toISOString() }, null, 2)
+          );
+
+          // Marker de éxito en la carpeta del correo (referencia la OC)
+          fs.writeFileSync(doneMarker, order.NumAtCard);
+          fs.rmSync(retriesPath, { force: true });
+
+          result.procesados++;
+          result.detalles.push(`  ✓ OC ${order.NumAtCard} → PARSED (${order.DocumentLines.length} items)`);
+        } catch (e) {
+          result.errores++;
+          result.detalles.push(`  ✗ Error en ${pdfFile}: ${String(e)}`);
+          const retries = fs.existsSync(retriesPath)
+            ? parseInt(fs.readFileSync(retriesPath, "utf8") || "0") + 1 : 1;
+          if (retries >= 3) {
+            fs.writeFileSync(errorPath, String(e));
+            fs.rmSync(retriesPath, { force: true });
+            await sendAlertEmail(
+              `[ERROR OrderLoader] PDF ${pdfFile} — fallo repetido`,
+              `<p>El archivo <b>${pdfFile}</b> falló ${retries} veces. Último error:</p><pre>${String(e)}</pre>`
+            ).catch(() => {});
+          } else {
+            fs.writeFileSync(retriesPath, String(retries));
+          }
+        }
       }
     }
   }

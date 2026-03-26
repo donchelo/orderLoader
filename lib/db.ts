@@ -25,6 +25,7 @@ export interface PedidoMaestro {
   sap_existe: number | null;
   sap_query_resultado: string | null;
   validacion_resultado: string | null;
+  items_excluidos: string | null;
   error_msg: string | null;
   carpeta_origen: string | null;
 }
@@ -85,6 +86,7 @@ export function migrate(): void {
       sap_existe            INTEGER,
       sap_query_resultado   TEXT,
       validacion_resultado  TEXT,
+      items_excluidos       TEXT,
       error_msg             TEXT,
       carpeta_origen        TEXT
     );
@@ -115,6 +117,9 @@ export function migrate(): void {
     CREATE INDEX IF NOT EXISTS idx_detalle_oc     ON pedidos_detalle(orden_compra);
     CREATE INDEX IF NOT EXISTS idx_log_oc         ON pipeline_log(orden_compra);
   `);
+
+  // Migraciones para columnas agregadas después de la creación inicial
+  try { db.exec(`ALTER TABLE pedidos_maestro ADD COLUMN items_excluidos TEXT`); } catch { /* ya existe */ }
 
   db.close();
   console.log("DB migrada correctamente:", config.dbPath);

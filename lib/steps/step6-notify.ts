@@ -1,13 +1,14 @@
 /**
- * Step 7: Enviar correo resumen del pipeline y cerrar pedidos.
+ * Step 6: Enviar correo resumen de pedidos procesados.
  *
- * VALIDADO + errores → email HTML → CERRADO
+ * Recoge todos los pedidos en estado terminal (VALIDADO, ERROR_*…),
+ * genera un email HTML con resumen + detalle de discrepancias y lo envía.
+ * Transiciona los pedidos a NOTIFICADO para que step7 los archive.
+ *
+ * VALIDADO | ERROR_* | SAP_MONTADO → NOTIFICADO
  */
 
-import fs from "fs";
-import path from "path";
 import nodemailer from "nodemailer";
-import { ImapFlow } from "imapflow";
 import { getConfig } from "../config";
 import { getDb, logPipeline } from "../db";
 
@@ -36,26 +37,72 @@ const ESTADO_COLOR: Record<string, string> = {
 function buildDetalle(row: Record<string, unknown>): string {
   const estado = String(row.estado);
 
-  // VALIDADO: mostrar DocNum SAP
   if (estado === "VALIDADO" && row.sap_doc_num) {
     return `DocNum SAP: ${row.sap_doc_num}`;
   }
 
-  // ERROR_VALIDACION: listar diferencias PDF vs SAP
   if (estado === "ERROR_VALIDACION" && row.validacion_resultado) {
     try {
-      const r = JSON.parse(String(row.validacion_resultado)) as { diferencias?: Array<{ campo: string; pdf: string | number; sap: string | number }> };
-      if (r.diferencias?.length) {
-        return r.diferencias
-          .map(d => `${d.campo}: PDF=${d.pdf} / SAP=${d.sap}`)
-          .join(" | ")
-          .slice(0, 200);
-      }
+      const r = JSON.parse(String(row.validacion_resultado)) as { diferencias?: unknown[] };
+      if (r.diferencias?.length) return `${r.diferencias.length} diferencia(s) — ver detalle abajo`;
     } catch { /* ignore */ }
   }
 
-  // Demás errores: error_msg
   return row.error_msg ? String(row.error_msg).slice(0, 120) : "";
+}
+
+function buildDiscrepanciasHtml(rows: Array<Record<string, unknown>>): string {
+  const conDifs = rows.filter(r => r.estado === "ERROR_VALIDACION" && r.validacion_resultado);
+  if (!conDifs.length) return "";
+
+  const secciones = conDifs.map(row => {
+    let diferencias: Array<{ campo: string; pdf: string | number; sap: string | number }> = [];
+    let docNum = row.sap_doc_num ?? "";
+    try {
+      const r = JSON.parse(String(row.validacion_resultado)) as {
+        diferencias?: typeof diferencias;
+        docNum?: string;
+      };
+      diferencias = r.diferencias ?? [];
+      if (r.docNum) docNum = r.docNum;
+    } catch { /* ignore */ }
+
+    if (!diferencias.length) return "";
+
+    const filas = diferencias.map(d => {
+      const esPrecio = String(d.campo).startsWith("Precio");
+      const fmt = (v: string | number) =>
+        esPrecio && typeof v === "number"
+          ? `$${v.toLocaleString("es-CO")}`
+          : String(v);
+      const esExcluido = String(d.campo).startsWith("Artículo no subido");
+      const rowColor = esExcluido ? "#f8d7da" : "#fff3cd";
+      return `<tr style="background:${rowColor}">
+        <td style="padding:4px 10px">${d.campo}</td>
+        <td style="padding:4px 10px">${fmt(d.pdf)}</td>
+        <td style="padding:4px 10px">${fmt(d.sap)}</td>
+      </tr>`;
+    }).join("");
+
+    return `
+    <div style="margin:16px 0;border:1px solid #ffc107;border-radius:4px;overflow:hidden">
+      <div style="background:#ffc107;padding:6px 12px;font-weight:bold">
+        ⚠ OC ${row.orden_compra}${docNum ? ` — DocNum SAP: ${docNum}` : ""} — Discrepancias
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead style="background:#343a40;color:#fff">
+          <tr>
+            <th style="padding:6px 10px;text-align:left">Campo</th>
+            <th style="padding:6px 10px;text-align:left">PDF</th>
+            <th style="padding:6px 10px;text-align:left">SAP</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>`;
+  }).join("");
+
+  return `<h3 style="margin-top:24px;margin-bottom:8px">Detalle de discrepancias</h3>${secciones}`;
 }
 
 function buildHtml(rows: Array<Record<string, unknown>>, fecha: string): string {
@@ -82,6 +129,7 @@ function buildHtml(rows: Array<Record<string, unknown>>, fecha: string): string 
     </thead>
     <tbody>${filas}</tbody>
   </table>
+  ${buildDiscrepanciasHtml(rows)}
   <p style="color:#888;font-size:11px;margin-top:16px">
     Generado automáticamente por OrderLoader Pipeline · ${fecha}
   </p>
@@ -104,7 +152,12 @@ export async function run(): Promise<StepResult> {
   }
 
   if (!config.emailUser || !config.emailPass || !config.smtpHost) {
-    result.detalles.push("Faltan credenciales SMTP en .env.local");
+    for (const row of rows) {
+      logPipeline(db, String(row.orden_compra), 6, "notify", "ERROR",
+        "Faltan credenciales SMTP — pedido pendiente de notificación");
+    }
+    result.errores = rows.length;
+    result.detalles.push(`✗ Faltan credenciales SMTP — ${rows.length} pedido(s) sin notificar`);
     return result;
   }
 
@@ -133,54 +186,21 @@ export async function run(): Promise<StepResult> {
     const tx = db.transaction(() => {
       for (const row of rows) {
         db.prepare(`
-          UPDATE pedidos_maestro SET estado='CERRADO', ts_notified=?, fase_actual=6
+          UPDATE pedidos_maestro SET estado='NOTIFICADO', ts_notified=?, fase_actual=6
           WHERE orden_compra=?
         `).run(now, row.orden_compra);
-        logPipeline(db, String(row.orden_compra), 7, "notifier", "OK", `Email → ${config.notifyEmail}`);
+        logPipeline(db, String(row.orden_compra), 6, "notify", "OK", `Email → ${config.notifyEmail}`);
       }
     });
     tx();
 
-    // Mover correos originales de INBOX → INBOX.Ingresados
-    const uids: number[] = [];
-    for (const row of rows) {
-      const carpeta = row.carpeta_origen as string | null;
-      if (!carpeta) continue;
-      try {
-        const meta = JSON.parse(fs.readFileSync(path.join(carpeta, "correo_metadata.json"), "utf8"));
-        if (meta.imap_uid) uids.push(Number(meta.imap_uid));
-      } catch { /* metadata no disponible */ }
-    }
-
-    if (uids.length > 0) {
-      try {
-        const imap = new ImapFlow({
-          host: config.emailHost, port: config.emailPort, secure: true,
-          auth: { user: config.emailUser, pass: config.emailPass },
-          logger: false,
-        });
-        await imap.connect();
-        const lock = await imap.getMailboxLock("INBOX");
-        try {
-          try { await imap.mailboxCreate("INBOX/Ingresados"); } catch { /* ya existe */ }
-          await imap.messageMove(uids.map(String).join(","), "INBOX/Ingresados", { uid: true });
-          result.detalles.push(`✓ ${uids.length} correo(s) movidos a INBOX/Ingresados`);
-        } finally {
-          lock.release();
-        }
-        await imap.logout();
-      } catch (e) {
-        result.detalles.push(`⚠ No se pudo mover correo(s) IMAP: ${String(e).slice(0, 80)}`);
-      }
-    }
-
     result.procesados = rows.length;
-    result.detalles.push(`✓ Email enviado a ${config.notifyEmail}: ${rows.length} pedidos → CERRADO`);
+    result.detalles.push(`✓ Email enviado a ${config.notifyEmail}: ${rows.length} pedido(s) → NOTIFICADO`);
   } catch (e) {
     result.errores = rows.length;
     result.detalles.push(`✗ Error enviando email: ${String(e)}`);
     for (const row of rows) {
-      logPipeline(db, String(row.orden_compra), 7, "notifier", "ERROR", String(e).slice(0, 120));
+      logPipeline(db, String(row.orden_compra), 6, "notify", "ERROR", String(e).slice(0, 120));
     }
   }
 

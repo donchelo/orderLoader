@@ -4,9 +4,8 @@
  * PARSE_VALIDO → SAP_NUEVO | ERROR_DUPLICADO
  */
 
-import nodemailer from "nodemailer";
-import { getConfig } from "../config";
 import { getDb, logPipeline } from "../db";
+import { sendAlertEmail } from "../mailer";
 import { getSapClient, clearSapClient } from "../sap-client";
 
 export interface StepResult {
@@ -16,15 +15,6 @@ export interface StepResult {
   detalles: string[];
 }
 
-async function sendAlertEmail(subject: string, html: string): Promise<void> {
-  const config = getConfig();
-  if (!config.emailUser || !config.emailPass || !config.smtpHost) return;
-  const t = nodemailer.createTransport({
-    host: config.smtpHost, port: config.smtpPort,
-    secure: false, auth: { user: config.emailUser, pass: config.emailPass },
-  });
-  await t.sendMail({ from: config.emailUser, to: config.notifyAlertasEmail, subject, html });
-}
 
 export async function run(): Promise<StepResult> {
   const result: StepResult = { procesados: 0, errores: 0, saltados: 0, detalles: [] };

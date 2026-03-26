@@ -4,10 +4,10 @@ import { run as step0 } from "./steps/step0-download";
 import { run as step1 } from "./steps/step1-parse";
 import { run as step2 } from "./steps/step2-validate-parse";
 import { run as step3 } from "./steps/step3-sap-query";
-import { run as step4 } from "./steps/step4-items";
-import { run as step5 } from "./steps/step5-upload";
-import { run as step6 } from "./steps/step6-reconcile";
-import { run as step7 } from "./steps/step7-notify";
+import { run as step4 } from "./steps/step4-upload";
+import { run as step5 } from "./steps/step5-reconcile";
+import { run as step6 } from "./steps/step6-notify";
+import { run as step7 } from "./steps/step7-archive";
 
 export interface StepResult {
   step: number;
@@ -30,10 +30,10 @@ const STEPS = [
   { n: 1, name: "parse",          fn: step1 },
   { n: 2, name: "validate-parse", fn: step2 },
   { n: 3, name: "sap-query",      fn: step3 },
-  { n: 4, name: "items",          fn: step4 },
-  { n: 5, name: "upload",         fn: step5 },
-  { n: 6, name: "reconcile",      fn: step6 },
-  { n: 7, name: "notify",         fn: step7 },
+  { n: 4, name: "upload",          fn: step4 },
+  { n: 5, name: "reconcile",      fn: step5 },
+  { n: 6, name: "notify",         fn: step6 },
+  { n: 7, name: "archive",        fn: step7 },
 ];
 
 async function runSteps(stepsToRun: typeof STEPS): Promise<StepResult[]> {
