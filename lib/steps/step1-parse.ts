@@ -263,6 +263,7 @@ async function parseWithAI(pdfText: string, prompt: string): Promise<[SapB1Order
   const msg = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 4096,
+    temperature: 0,
     system: prompt,
     messages: [{ role: "user", content: pdfText }],
   });
