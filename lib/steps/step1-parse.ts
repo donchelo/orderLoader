@@ -32,6 +32,7 @@ export interface SapB1Order {
   DocDate: string;    // YYYYMMDD
   DocDueDate: string; // YYYYMMDD
   TaxDate: string;    // YYYYMMDD
+  Comments: string;   // Observaciones del PDF → campo Observaciones de la OV
   DocumentLines: DocumentLine[];
 }
 
@@ -68,6 +69,7 @@ Analyze the provided purchase order document and generate a JSON object that fai
   * General delivery date (DocDueDate)
   * Document date (DocDate) → Today's date at time of processing (NOT from the document)
   * Tax date (TaxDate) → Corresponds to the "fecha de elaboración" or document date printed on the PDF
+  * Observations / remarks (Comments) → Copy verbatim any text found in an "Observaciones", "Remarks", "Notas", or similar section of the document. Use empty string "" if none found.
 * **Individual items**: For each product extract:
   * Product code/reference (SupplierCatNum) — **remove any leading zeros** (e.g., "014007383001" → "14007383001")
   * Requested quantity (Quantity)
@@ -107,6 +109,7 @@ Before generating the response, verify:
 * CardCode is "CN800069933"
 * DocType is "dDocument_Items"
 * Quantities correctly reflect thousands (e.g., "126.000" → 126000)
+* Comments contains the verbatim observations from the document (or "" if none)
 * Valid JSON syntax (no trailing commas, proper brackets)
 
 ## RESPONSE FORMAT
@@ -142,6 +145,7 @@ Extract the following from the document:
 - **OC emission date**: Date printed on the purchase order document → maps to TaxDate
 - **Delivery date**: General/expected delivery date → maps to DocDueDate
 - **Today's date**: The current date at time of processing → maps to DocDate
+- **Observations / remarks**: Verbatim text from any "Observaciones", "Remarks", "Notas", or similar section → maps to Comments. Use "" if none found.
 - **Individual line items**: For each product:
   - Supplier catalog number / product code
   - Ordered quantity
@@ -174,6 +178,7 @@ Extract the following from the document:
 | Today's date (processing date)  | \`DocDate\`           | YYYYMMDD — NOT from document   |
 | OC delivery date                | \`DocDueDate\`        | YYYYMMDD — from document       |
 | OC emission date (printed date) | \`TaxDate\`           | YYYYMMDD — from document       |
+| Observaciones / Remarks section | \`Comments\`          | Verbatim text, "" if absent    |
 | Item product/catalog code       | \`DocumentLines[].SupplierCatNum\` | String              |
 | Item quantity                   | \`DocumentLines[].Quantity\`       | Integer             |
 
@@ -184,6 +189,7 @@ Before responding, verify:
 - ✅ \`DocDueDate\` is the delivery date in YYYYMMDD
 - ✅ \`CardCode\` is exactly \`"CN890900608"\`
 - ✅ \`DocType\` is exactly \`"dDocument_Items"\`
+- ✅ \`Comments\` contains verbatim observations from the document (or "" if none)
 - ✅ \`DocumentLines\` contains one entry per unique line item
 - ✅ All quantities are whole integers without decimals
 - ✅ Valid JSON syntax — no trailing commas, no extra fields
@@ -212,6 +218,7 @@ Analyze the provided purchase order document and generate a JSON object followin
 - **Document date** (DocDate): The date the order was issued
 - **Delivery date** (DocDueDate): The requested delivery date
 - **Tax date** (TaxDate): The invoice/tax reference date (use document date if not explicitly stated)
+- **Observations / remarks** (Comments): Verbatim text from any "Observaciones", "Remarks", "Notas", or similar section. Use "" if none found.
 - **Line items**: For each product extract:
   - Supplier catalog number / product code (SupplierCatNum) — **remove any leading zeros** (e.g., "0201931" → "201931")
   - Ordered quantity (Quantity)
@@ -247,6 +254,7 @@ Before generating the response, verify:
 - ✅ Quantities are whole numbers (no decimals)
 - ✅ DocumentLines array contains one object per unique line item
 - ✅ SupplierCatNum values have NO leading zeros (e.g., "0201931" → "201931")
+- ✅ Comments contains verbatim observations from the document (or "" if none)
 - ✅ Valid JSON syntax
 
 ## RESPONSE FORMAT

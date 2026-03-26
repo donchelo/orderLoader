@@ -82,6 +82,7 @@ export async function run(): Promise<StepResult> {
       DocDate:    yyyymmddToIso(aiData.DocDate),
       DocDueDate: yyyymmddToIso(aiData.DocDueDate),
       TaxDate:    yyyymmddToIso(aiData.TaxDate),
+      Comments:   aiData.Comments ?? "",
       DocumentLines: aiData.DocumentLines.map(l => ({
         SupplierCatNum: l.SupplierCatNum,
         Quantity:       l.Quantity,
