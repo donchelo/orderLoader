@@ -46,7 +46,7 @@ export async function run(): Promise<StepResult> {
 
     try {
       const res = await sap.get<{ value: Array<Record<string, unknown>> }>(
-        "PurchaseOrders",
+        "Orders",
         { "$filter": `NumAtCard eq '${oc}'`, "$select": "DocEntry,DocNum,DocTotal,CardCode" }
       );
       const valor = res.value ?? [];

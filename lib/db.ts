@@ -130,7 +130,7 @@ export function logPipeline(
   oc: string | null,
   fase: number,
   faseNombre: string,
-  estado: "OK" | "ERROR",
+  estado: "OK" | "ERROR" | "WARN",
   mensaje: string
 ): void {
   db.prepare(

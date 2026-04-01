@@ -114,20 +114,29 @@ export async function run(): Promise<StepResult> {
     }
 
     // ── Retry loop: excluir artículos rechazados por SAP y reintentar ────────
-    const lineas = [...aiData.DocumentLines];
+    let lineas = aiData.DocumentLines.map(l => ({ ...l }));
     const excluidos: typeof lineas = [];
     let uploaded = false;
     let docEntry: unknown, docNum: string;
 
     while (lineas.length > 0) {
+      // Agrupar ítems por SupplierCatNum para evitar errores de duplicidad en SAP
+      const groupedLines: Record<string, number> = {};
+      for (const l of lineas) {
+        groupedLines[l.SupplierCatNum] = (groupedLines[l.SupplierCatNum] || 0) + l.Quantity;
+      }
+
       const payload = {
         CardCode:   aiData.CardCode,
         NumAtCard:  aiData.NumAtCard,
         DocDate:    yyyymmddToIso(aiData.DocDate),
         DocDueDate: yyyymmddToIso(maxFechaLineas(lineas, aiData.DocDueDate)),
         TaxDate:    yyyymmddToIso(aiData.TaxDate),
-        Comments:   aiData.Comments ?? "",
-        DocumentLines: lineas.map(l => ({ SupplierCatNum: l.SupplierCatNum, Quantity: l.Quantity })),
+        Comments:   (aiData.Comments ?? "").slice(0, 250), // Truncar a 250 chars para SAP
+        DocumentLines: Object.entries(groupedLines).map(([catNum, qty]) => ({
+          SupplierCatNum: catNum,
+          Quantity: qty
+        })),
       };
 
       try {
