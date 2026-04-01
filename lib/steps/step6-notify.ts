@@ -37,7 +37,6 @@ const ESTADO_COLOR: Record<string, string> = {
 const SAP_ERROR_CODES: Record<string, string> = {
   "-1116": "Artículo sin precio en la lista de precios de SAP — pedido NO creado",
   "-8112": "Error en datos del documento (serie de numeración o socio de negocio) — pedido NO creado",
-  "-2028": "Fecha fuera del período contable abierto — pedido NO creado",
   "-10":   "Sin autorización en SAP — pedido NO creado",
 };
 
@@ -45,7 +44,10 @@ function parseSapError(errorMsg: string): string {
   const codeMatch = errorMsg.match(/"code"\s*:\s*"(-?\d+)"/);
   if (codeMatch) {
     const code = codeMatch[1];
-    return SAP_ERROR_CODES[code] ?? `Error SAP (código ${code}) — pedido NO creado`;
+    if (SAP_ERROR_CODES[code]) return SAP_ERROR_CODES[code];
+    const msgMatch = errorMsg.match(/"message"\s*:\s*"([^"]{4,})"/);
+    if (msgMatch) return `Error SAP (${code}): ${msgMatch[1].slice(0, 100)} — pedido NO creado`;
+    return `Error SAP (código ${code}) — pedido NO creado`;
   }
   return errorMsg.replace(/Error: SAP \w+ https?:\/\/\S+ → \d+:\s*/i, "").slice(0, 120);
 }

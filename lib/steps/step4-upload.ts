@@ -12,6 +12,7 @@ import fs from "fs";
 import path from "path";
 import { getDb, logPipeline } from "../db";
 import { getSapClient, clearSapClient } from "../sap-client";
+import type { SapB1Client } from "../sap-client";
 import type { SapB1Order } from "./step1-parse";
 
 export interface StepResult {
@@ -46,6 +47,44 @@ function extractItemFromError(
     if (idx >= 0 && idx < lines.length) return lines[idx].SupplierCatNum;
   }
   return null;
+}
+
+/** Detecta errores SAP genéricos de "artículo no encontrado" donde SAP
+ *  no especifica qué artículo falló. */
+function isItemNotFoundError(errorMsg: string): boolean {
+  return /no matching records/i.test(errorMsg);
+}
+
+/** Consulta los catálogos por socio de negocio (tabla OSCN en SAP B1,
+ *  BusinessPartnerCatalogNumbers en Service Layer) para determinar qué
+ *  SupplierCatNums están registrados para el CardCode dado.
+ *
+ *  Safe default: si la consulta falla asumimos que el artículo SÍ existe
+ *  para evitar excluir artículos válidos por error de red o de permisos. */
+async function fetchExistingCatNums(
+  sap: SapB1Client,
+  cardCode: string,
+  catNums: string[]
+): Promise<Set<string>> {
+  const found = new Set<string>();
+  await Promise.all(
+    catNums.map(async (catNum) => {
+      try {
+        const escapedCard = cardCode.replace(/'/g, "''");
+        const escapedCat  = catNum.replace(/'/g, "''");
+        const res = await sap.get<{ value: unknown[] }>("BusinessPartnerCatalogNumbers", {
+          "$filter": `CardCode eq '${escapedCard}' and SupplierCatNum eq '${escapedCat}'`,
+          "$select": "ItemCode",
+          "$top": "1",
+        });
+        if (res.value?.length > 0) found.add(catNum);
+      } catch {
+        // Si la consulta falla, asumimos que el artículo existe (evita falsos positivos)
+        found.add(catNum);
+      }
+    })
+  );
+  return found;
 }
 
 export async function run(): Promise<StepResult> {
@@ -149,6 +188,23 @@ export async function run(): Promise<StepResult> {
         const errorMsg = String(e);
         const itemCode = extractItemFromError(errorMsg, lineas);
         if (!itemCode) {
+          // Si SAP no identificó el artículo pero el error es "No matching records",
+          // consultamos SAP ítem por ítem para encontrar los que no existen.
+          if (isItemNotFoundError(errorMsg)) {
+            const catNums = lineas.map(l => l.SupplierCatNum);
+            const existing = await fetchExistingCatNums(sap, aiData.CardCode, catNums);
+            const missing = lineas.filter(l => !existing.has(l.SupplierCatNum));
+            if (missing.length > 0) {
+              excluidos.push(...missing);
+              lineas = lineas.filter(l => existing.has(l.SupplierCatNum));
+              for (const m of missing) {
+                logPipeline(db, oc, 4, "upload", "WARN",
+                  `Artículo ${m.SupplierCatNum} no existe en SAP — excluido`);
+                result.detalles.push(`  ⚠ OC ${oc}: artículo ${m.SupplierCatNum} no existe en SAP — excluido`);
+              }
+              continue; // reintentar sin los artículos faltantes
+            }
+          }
           db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_SAP', error_msg=? WHERE orden_compra=?`)
             .run(errorMsg.slice(0, 250), oc);
           logPipeline(db, oc, 4, "upload", "ERROR", errorMsg.slice(0, 120));
