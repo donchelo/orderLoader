@@ -85,8 +85,8 @@ export default function RunPipelineButton({ onComplete }: Props) {
               </tr>
             </thead>
             <tbody>
-              {results.map((r) => (
-                <tr key={r.step} style={{ background: r.errores > 0 ? "#f8d7da" : "#d1e7dd" }}>
+              {results.map((r, i) => (
+                <tr key={i} style={{ background: r.errores > 0 ? "#f8d7da" : "#d1e7dd" }}>
                   <td style={{ padding: "6px 12px" }}>{r.step}: {r.name}</td>
                   <td style={{ padding: "6px 12px", textAlign: "center" }}>{r.procesados}</td>
                   <td style={{ padding: "6px 12px", textAlign: "center" }}>{r.errores}</td>

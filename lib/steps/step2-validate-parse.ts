@@ -64,8 +64,6 @@ function validarSapB1Json(order: SapB1Order, clienteNombre: string): string[] {
     } else {
       if (clienteNombre !== "EXITO" && /^0/.test(line.SupplierCatNum))
         errores.push(`${ref}: SupplierCatNum '${line.SupplierCatNum}' tiene cero inicial`);
-      if (vistos.has(line.SupplierCatNum))
-        errores.push(`${ref}: SupplierCatNum '${line.SupplierCatNum}' duplicado`);
       vistos.add(line.SupplierCatNum);
     }
 
