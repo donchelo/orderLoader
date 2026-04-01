@@ -34,21 +34,47 @@ const ESTADO_COLOR: Record<string, string> = {
   ERROR_VALIDACION:  "#fff3cd",
 };
 
+const SAP_ERROR_CODES: Record<string, string> = {
+  "-1116": "Artículo sin precio en la lista de precios de SAP — pedido NO creado",
+  "-8112": "Error en datos del documento (serie de numeración o socio de negocio) — pedido NO creado",
+  "-2028": "Fecha fuera del período contable abierto — pedido NO creado",
+  "-10":   "Sin autorización en SAP — pedido NO creado",
+};
+
+function parseSapError(errorMsg: string): string {
+  const codeMatch = errorMsg.match(/"code"\s*:\s*"(-?\d+)"/);
+  if (codeMatch) {
+    const code = codeMatch[1];
+    return SAP_ERROR_CODES[code] ?? `Error SAP (código ${code}) — pedido NO creado`;
+  }
+  return errorMsg.replace(/Error: SAP \w+ https?:\/\/\S+ → \d+:\s*/i, "").slice(0, 120);
+}
+
 function buildDetalle(row: Record<string, unknown>): string {
   const estado = String(row.estado);
 
-  if (estado === "VALIDADO" && row.sap_doc_num) {
-    return `DocNum SAP: ${row.sap_doc_num}`;
+  let excluidos: string[] = [];
+  try {
+    if (row.items_excluidos) excluidos = JSON.parse(String(row.items_excluidos)) as string[];
+  } catch { /* ignore */ }
+  const exclMsg = excluidos.length
+    ? ` — sin precio SAP, no subido(s): ${excluidos.join(", ")}` : "";
+
+  if ((estado === "VALIDADO" || estado === "SAP_MONTADO") && row.sap_doc_num) {
+    return `DocNum SAP: ${row.sap_doc_num}${exclMsg}`;
   }
 
   if (estado === "ERROR_VALIDACION" && row.validacion_resultado) {
     try {
-      const r = JSON.parse(String(row.validacion_resultado)) as { diferencias?: unknown[] };
-      if (r.diferencias?.length) return `${r.diferencias.length} diferencia(s) — ver detalle abajo`;
+      const r = JSON.parse(String(row.validacion_resultado)) as { diferencias?: unknown[]; docNum?: string };
+      const docPart = r.docNum ? ` (DocNum SAP: ${r.docNum})` : "";
+      if (r.diferencias?.length) return `${r.diferencias.length} diferencia(s)${docPart} — ver detalle abajo${exclMsg}`;
     } catch { /* ignore */ }
   }
 
-  return row.error_msg ? String(row.error_msg).slice(0, 120) : "";
+  if (row.error_msg) return parseSapError(String(row.error_msg));
+
+  return "";
 }
 
 function buildDiscrepanciasHtml(rows: Array<Record<string, unknown>>): string {
