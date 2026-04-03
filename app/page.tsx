@@ -50,16 +50,17 @@ export default function Home() {
   const enProceso = total - cerrados - errores;
 
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", minHeight: "100vh", background: "#f8f9fa" }}>
+    <div style={{ fontFamily: "system-ui, sans-serif", minHeight: "100vh", background: "#f8f9fa", color: "#000" }}>
       {/* Header */}
       <header style={{
-        background: "#1a1a2e", color: "#fff", padding: "16px 32px",
+        background: "#f0f2f5", color: "#000", padding: "16px 32px",
         display: "flex", alignItems: "center", gap: 16,
+        borderBottom: "1px solid #dee2e6"
       }}>
         <span style={{ fontSize: 28 }}>🖨️</span>
         <div>
           <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>OrderLoader — SAP B1 Order Pipeline</h1>
-          <p style={{ margin: 0, fontSize: 12, color: "#adb5bd" }}>
+          <p style={{ margin: 0, fontSize: 12, color: "#000" }}>
             Automatización Email → SAP B1
           </p>
         </div>
@@ -69,10 +70,10 @@ export default function Home() {
         {/* Stats row */}
         <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
           {[
-            { label: "Total pedidos", value: total, bg: "#e9ecef", color: "#333" },
-            { label: "En proceso", value: enProceso, bg: "#fff3cd", color: "#664d03" },
-            { label: "Cerrados OK", value: cerrados, bg: "#d1e7dd", color: "#0a3622" },
-            { label: "Con errores", value: errores, bg: "#f8d7da", color: "#842029" },
+            { label: "Total pedidos", value: total, bg: "#e9ecef", color: "#000" },
+            { label: "En proceso", value: enProceso, bg: "#fff3cd", color: "#000" },
+            { label: "Cerrados OK", value: cerrados, bg: "#d1e7dd", color: "#000" },
+            { label: "Con errores", value: errores, bg: "#f8d7da", color: "#000" },
           ].map(stat => (
             <div key={stat.label} style={{
               background: stat.bg, color: stat.color,
@@ -94,7 +95,7 @@ export default function Home() {
             <button
               onClick={fetchPedidos}
               style={{
-                background: "#fff", color: "#0d6efd", border: "1px solid #0d6efd",
+                background: "#fff", color: "#000", border: "1px solid #000",
                 borderRadius: 6, padding: "10px 20px", fontSize: 14, cursor: "pointer",
               }}
             >
@@ -102,7 +103,7 @@ export default function Home() {
             </button>
           </div>
           {lastRefresh && (
-            <div style={{ marginTop: 8, fontSize: 12, color: "#6c757d" }}>
+            <div style={{ marginTop: 8, fontSize: 12, color: "#000" }}>
               Última actualización: {lastRefresh.toLocaleTimeString("es-CO")}
             </div>
           )}
@@ -113,16 +114,16 @@ export default function Home() {
           background: "#fff", border: "1px solid #dee2e6", borderRadius: 8,
           padding: "20px 24px",
         }}>
-          <h2 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600 }}>
+          <h2 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600, color: "#000" }}>
             Pedidos
           </h2>
 
           {loading ? (
-            <div style={{ padding: "32px 0", textAlign: "center", color: "#6c757d" }}>
+            <div style={{ padding: "32px 0", textAlign: "center", color: "#000" }}>
               Cargando…
             </div>
           ) : error ? (
-            <div style={{ background: "#f8d7da", color: "#842029", padding: "12px 16px", borderRadius: 6 }}>
+            <div style={{ background: "#f8d7da", color: "#000", padding: "12px 16px", borderRadius: 6 }}>
               <strong>Error:</strong> {error}
               <br />
               <small>¿La base de datos fue inicializada? Ejecuta migrate primero.</small>

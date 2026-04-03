@@ -52,9 +52,9 @@ export default function RunPipelineButton({ onComplete }: Props) {
         onClick={handleRun}
         disabled={running}
         style={{
-          background: running ? "#6c757d" : "#0d6efd",
-          color: "#fff",
-          border: "none",
+          background: running ? "#e9ecef" : "#f8f9fa",
+          color: "#000",
+          border: "1px solid #000",
           borderRadius: "6px",
           padding: "10px 24px",
           fontSize: "14px",
@@ -66,17 +66,17 @@ export default function RunPipelineButton({ onComplete }: Props) {
       </button>
 
       {error && (
-        <div style={{ marginTop: 12, background: "#f8d7da", color: "#842029", padding: "10px 14px", borderRadius: 6 }}>
+        <div style={{ marginTop: 12, background: "#f8d7da", color: "#000", padding: "10px 14px", borderRadius: 6 }}>
           Error: {error}
         </div>
       )}
 
       {results && (
         <div style={{ marginTop: 16 }}>
-          <h3 style={{ margin: "0 0 8px" }}>Resultados del pipeline</h3>
-          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+          <h3 style={{ margin: "0 0 8px", color: "#000" }}>Resultados del pipeline</h3>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13, color: "#000" }}>
             <thead>
-              <tr style={{ background: "#343a40", color: "#fff" }}>
+              <tr style={{ background: "#f8f9fa", color: "#000", borderBottom: "2px solid #dee2e6" }}>
                 <th style={{ padding: "6px 12px", textAlign: "left" }}>Step</th>
                 <th style={{ padding: "6px 12px" }}>Procesados</th>
                 <th style={{ padding: "6px 12px" }}>Errores</th>
@@ -86,7 +86,7 @@ export default function RunPipelineButton({ onComplete }: Props) {
             </thead>
             <tbody>
               {results.map((r, i) => (
-                <tr key={i} style={{ background: r.errores > 0 ? "#f8d7da" : "#d1e7dd" }}>
+                <tr key={i} style={{ background: r.errores > 0 ? "#f8d7da" : "#d1e7dd", color: "#000" }}>
                   <td style={{ padding: "6px 12px" }}>{r.step}: {r.name}</td>
                   <td style={{ padding: "6px 12px", textAlign: "center" }}>{r.procesados}</td>
                   <td style={{ padding: "6px 12px", textAlign: "center" }}>{r.errores}</td>
@@ -97,8 +97,8 @@ export default function RunPipelineButton({ onComplete }: Props) {
             </tbody>
           </table>
           <details style={{ marginTop: 8 }}>
-            <summary style={{ cursor: "pointer", fontSize: 13, color: "#6c757d" }}>Ver detalles</summary>
-            <pre style={{ background: "#f8f9fa", padding: 12, borderRadius: 6, fontSize: 12, overflowX: "auto" }}>
+            <summary style={{ cursor: "pointer", fontSize: 13, color: "#000" }}>Ver detalles</summary>
+            <pre style={{ background: "#f8f9fa", padding: 12, borderRadius: 6, fontSize: 12, overflowX: "auto", color: "#000" }}>
               {results.flatMap(r => r.detalles).join("\n")}
             </pre>
           </details>

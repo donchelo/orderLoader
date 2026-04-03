@@ -45,7 +45,7 @@ export default function PedidoTable({ pedidos, filtroEstado, onFiltroChange }: P
     <div>
       {/* Filtro */}
       <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <span style={{ fontSize: 13, color: "#6c757d" }}>Filtrar:</span>
+        <span style={{ fontSize: 13, color: "#000" }}>Filtrar:</span>
         {ESTADOS.map(e => (
           <button
             key={e}
@@ -56,7 +56,7 @@ export default function PedidoTable({ pedidos, filtroEstado, onFiltroChange }: P
               border: "1px solid",
               borderColor: filtroEstado === e ? "#0d6efd" : "#dee2e6",
               background: filtroEstado === e ? "#0d6efd" : "#fff",
-              color: filtroEstado === e ? "#fff" : "#333",
+              color: "#000",
               fontSize: 12,
               cursor: "pointer",
             }}
@@ -68,14 +68,14 @@ export default function PedidoTable({ pedidos, filtroEstado, onFiltroChange }: P
 
       {/* Tabla */}
       {filtered.length === 0 ? (
-        <div style={{ padding: "32px 0", textAlign: "center", color: "#6c757d" }}>
+        <div style={{ padding: "32px 0", textAlign: "center", color: "#000" }}>
           No hay pedidos{filtroEstado !== "todos" ? ` en estado ${filtroEstado}` : ""}.
         </div>
       ) : (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13, color: "#000" }}>
             <thead>
-              <tr style={{ background: "#343a40", color: "#fff" }}>
+              <tr style={{ background: "#f8f9fa", color: "#000", borderBottom: "2px solid #dee2e6" }}>
                 <th style={{ padding: "8px 12px", textAlign: "left" }}>OC</th>
                 <th style={{ padding: "8px 12px", textAlign: "left" }}>Cliente</th>
                 <th style={{ padding: "8px 12px", textAlign: "left" }}>Solicitado</th>
@@ -103,15 +103,15 @@ export default function PedidoTable({ pedidos, filtroEstado, onFiltroChange }: P
                   <td style={{ padding: "7px 12px", textAlign: "center" }}>
                     <PipelineStatus estado={p.estado} />
                   </td>
-                  <td style={{ padding: "7px 12px", color: "#6c757d" }}>{p.sap_doc_num ?? "—"}</td>
-                  <td style={{ padding: "7px 12px", color: "#dc3545", fontSize: 12 }}>
+                  <td style={{ padding: "7px 12px", color: "#000" }}>{p.sap_doc_num ?? "—"}</td>
+                  <td style={{ padding: "7px 12px", color: "#000", fontSize: 12 }}>
                     {p.error_msg ? p.error_msg.slice(0, 60) : ""}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <div style={{ marginTop: 8, fontSize: 12, color: "#6c757d" }}>
+          <div style={{ marginTop: 8, fontSize: 12, color: "#000" }}>
             {filtered.length} pedido(s) mostrado(s)
           </div>
         </div>
