@@ -52,15 +52,18 @@ function parseSapError(errorMsg: string): string {
   return errorMsg.replace(/Error: SAP \w+ https?:\/\/\S+ → \d+:\s*/i, "").slice(0, 120);
 }
 
+function parseExcluidos(row: Record<string, unknown>): string[] {
+  try {
+    if (row.items_excluidos) return JSON.parse(String(row.items_excluidos)) as string[];
+  } catch { /* ignore */ }
+  return [];
+}
+
 function buildDetalle(row: Record<string, unknown>): string {
   const estado = String(row.estado);
-
-  let excluidos: string[] = [];
-  try {
-    if (row.items_excluidos) excluidos = JSON.parse(String(row.items_excluidos)) as string[];
-  } catch { /* ignore */ }
+  const excluidos = parseExcluidos(row);
   const exclMsg = excluidos.length
-    ? ` — sin precio SAP, no subido(s): ${excluidos.join(", ")}` : "";
+    ? ` — ${excluidos.length} artículo(s) excluido(s) por no existir en SAP` : "";
 
   if ((estado === "VALIDADO" || estado === "SAP_MONTADO") && row.sap_doc_num) {
     return `DocNum SAP: ${row.sap_doc_num}${exclMsg}`;
@@ -133,13 +136,53 @@ function buildDiscrepanciasHtml(rows: Array<Record<string, unknown>>): string {
   return `<h3 style="margin-top:24px;margin-bottom:8px">Detalle de discrepancias</h3>${secciones}`;
 }
 
+function buildExcluidosHtml(rows: Array<Record<string, unknown>>): string {
+  const parciales = rows.filter(r =>
+    (r.estado === "SAP_MONTADO" || r.estado === "VALIDADO") && parseExcluidos(r).length > 0
+  );
+  if (!parciales.length) return "";
+
+  const secciones = parciales.map(row => {
+    const excluidos = parseExcluidos(row);
+    const filas = excluidos.map(cat =>
+      `<tr style="background:#f8d7da">
+        <td style="padding:5px 12px">⛔</td>
+        <td style="padding:5px 12px;font-family:monospace">${cat}</td>
+        <td style="padding:5px 12px;color:#721c24">No registrado en catálogo SAP — no subido</td>
+      </tr>`
+    ).join("");
+
+    return `
+    <div style="margin:16px 0;border:1px solid #f5c6cb;border-radius:4px;overflow:hidden">
+      <div style="background:#f5c6cb;padding:6px 12px;font-weight:bold;color:#721c24">
+        ⛔ OC ${row.orden_compra} — ${row.cliente_nombre}${row.sap_doc_num ? ` (DocNum SAP: ${row.sap_doc_num})` : ""} — Artículos excluidos por no existir en SAP
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead style="background:#343a40;color:#fff">
+          <tr>
+            <th style="padding:6px 10px"></th>
+            <th style="padding:6px 10px;text-align:left">SupplierCatNum</th>
+            <th style="padding:6px 10px;text-align:left">Motivo</th>
+          </tr>
+        </thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </div>`;
+  }).join("");
+
+  return `<h3 style="margin-top:24px;margin-bottom:8px;color:#721c24">⛔ Artículos no subidos a SAP (no existen en catálogo)</h3>${secciones}`;
+}
+
 function buildHtml(rows: Array<Record<string, unknown>>, fecha: string): string {
   const filas = rows.map(row => {
-    const color = ESTADO_COLOR[String(row.estado)] ?? "#ffffff";
+    const estado = String(row.estado);
+    const esParcial = (estado === "SAP_MONTADO" || estado === "VALIDADO") && parseExcluidos(row).length > 0;
+    const color = esParcial ? "#fff3cd" : (ESTADO_COLOR[estado] ?? "#ffffff");
+    const estadoLabel = esParcial ? `${estado} ⚠ PARCIAL` : estado;
     return `<tr style="background:${color}">
       <td style="padding:6px 12px">${row.orden_compra}</td>
       <td style="padding:6px 12px">${row.cliente_nombre}</td>
-      <td style="padding:6px 12px"><b>${row.estado}</b></td>
+      <td style="padding:6px 12px"><b>${estadoLabel}</b></td>
       <td style="padding:6px 12px">${buildDetalle(row)}</td>
     </tr>`;
   }).join("");
@@ -157,6 +200,7 @@ function buildHtml(rows: Array<Record<string, unknown>>, fecha: string): string 
     </thead>
     <tbody>${filas}</tbody>
   </table>
+  ${buildExcluidosHtml(rows)}
   ${buildDiscrepanciasHtml(rows)}
   <p style="color:#888;font-size:11px;margin-top:16px">
     Generado automáticamente por OrderLoader Pipeline · ${fecha}
@@ -190,9 +234,15 @@ export async function run(): Promise<StepResult> {
   }
 
   const fecha = new Date().toISOString().split("T")[0];
-  const nOk = rows.filter(r => r.estado === "VALIDADO" || r.estado === "SAP_MONTADO").length;
-  const nErr = rows.length - nOk;
-  const subject = `[OrderLoader] Resumen pedidos — ${fecha} — ${nOk} OK / ${nErr} errores`;
+  const nOk = rows.filter(r =>
+    (r.estado === "VALIDADO" || r.estado === "SAP_MONTADO") && !parseExcluidos(r).length
+  ).length;
+  const nParcial = rows.filter(r =>
+    (r.estado === "VALIDADO" || r.estado === "SAP_MONTADO") && parseExcluidos(r).length > 0
+  ).length;
+  const nErr = rows.filter(r => String(r.estado).startsWith("ERROR_")).length;
+  const partesParcial = nParcial > 0 ? ` / ${nParcial} parcial(es)` : "";
+  const subject = `[OrderLoader] ${fecha} — ${nOk} OK${partesParcial} / ${nErr} error(es)`;
   const html = buildHtml(rows, fecha);
 
   const transporter = nodemailer.createTransport({

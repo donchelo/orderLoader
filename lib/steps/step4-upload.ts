@@ -49,15 +49,9 @@ function extractItemFromError(
   return null;
 }
 
-/** Detecta errores SAP genéricos de "artículo no encontrado" donde SAP
- *  no especifica qué artículo falló. */
-function isItemNotFoundError(errorMsg: string): boolean {
-  return /no matching records/i.test(errorMsg);
-}
-
-/** Consulta los catálogos por socio de negocio (tabla OSCN en SAP B1,
- *  BusinessPartnerCatalogNumbers en Service Layer) para determinar qué
+/** Consulta AlternateCatNum (tabla OSCN en SAP B1) para determinar qué
  *  SupplierCatNums están registrados para el CardCode dado.
+ *  Usa el campo `Substitute` que es el número de catálogo alternativo del cliente.
  *
  *  Safe default: si la consulta falla asumimos que el artículo SÍ existe
  *  para evitar excluir artículos válidos por error de red o de permisos. */
@@ -72,8 +66,8 @@ async function fetchExistingCatNums(
       try {
         const escapedCard = cardCode.replace(/'/g, "''");
         const escapedCat  = catNum.replace(/'/g, "''");
-        const res = await sap.get<{ value: unknown[] }>("BusinessPartnerCatalogNumbers", {
-          "$filter": `CardCode eq '${escapedCard}' and SupplierCatNum eq '${escapedCat}'`,
+        const res = await sap.get<{ value: unknown[] }>("AlternateCatNum", {
+          "$filter": `CardCode eq '${escapedCard}' and Substitute eq '${escapedCat}'`,
           "$select": "ItemCode",
           "$top": "1",
         });
@@ -152,9 +146,34 @@ export async function run(): Promise<StepResult> {
       continue;
     }
 
-    // ── Retry loop: excluir artículos rechazados por SAP y reintentar ────────
+    // ── Pre-validar artículos contra AlternateCatNum antes de subir ──────────
     let lineas = aiData.DocumentLines.map(l => ({ ...l }));
     const excluidos: typeof lineas = [];
+
+    const allCatNums = [...new Set(lineas.map(l => l.SupplierCatNum))];
+    const existing = await fetchExistingCatNums(sap, aiData.CardCode, allCatNums);
+    const missing = lineas.filter(l => !existing.has(l.SupplierCatNum));
+    if (missing.length > 0) {
+      excluidos.push(...missing);
+      lineas = lineas.filter(l => existing.has(l.SupplierCatNum));
+      for (const m of missing) {
+        logPipeline(db, oc, 4, "upload", "WARN",
+          `Artículo ${m.SupplierCatNum} no existe en AlternateCatNum de SAP — excluido`);
+        result.detalles.push(`  ⚠ OC ${oc}: artículo ${m.SupplierCatNum} no existe en SAP — excluido`);
+      }
+    }
+
+    if (lineas.length === 0) {
+      const msg = `Todos los artículos fueron rechazados (no existen en SAP): ${excluidos.map(l => l.SupplierCatNum).join(", ")}`;
+      db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_SAP', error_msg=?, items_excluidos=? WHERE orden_compra=?`)
+        .run(msg.slice(0, 250), JSON.stringify(excluidos.map(l => l.SupplierCatNum)), oc);
+      logPipeline(db, oc, 4, "upload", "ERROR", msg.slice(0, 120));
+      result.errores++;
+      result.detalles.push(`✗ OC ${oc}: ${msg}`);
+      continue;
+    }
+
+    // ── Retry loop: excluir artículos rechazados por SAP y reintentar ────────
     let uploaded = false;
     let docEntry: unknown, docNum: string;
 
@@ -188,23 +207,6 @@ export async function run(): Promise<StepResult> {
         const errorMsg = String(e);
         const itemCode = extractItemFromError(errorMsg, lineas);
         if (!itemCode) {
-          // Si SAP no identificó el artículo pero el error es "No matching records",
-          // consultamos SAP ítem por ítem para encontrar los que no existen.
-          if (isItemNotFoundError(errorMsg)) {
-            const catNums = lineas.map(l => l.SupplierCatNum);
-            const existing = await fetchExistingCatNums(sap, aiData.CardCode, catNums);
-            const missing = lineas.filter(l => !existing.has(l.SupplierCatNum));
-            if (missing.length > 0) {
-              excluidos.push(...missing);
-              lineas = lineas.filter(l => existing.has(l.SupplierCatNum));
-              for (const m of missing) {
-                logPipeline(db, oc, 4, "upload", "WARN",
-                  `Artículo ${m.SupplierCatNum} no existe en SAP — excluido`);
-                result.detalles.push(`  ⚠ OC ${oc}: artículo ${m.SupplierCatNum} no existe en SAP — excluido`);
-              }
-              continue; // reintentar sin los artículos faltantes
-            }
-          }
           db.prepare(`UPDATE pedidos_maestro SET estado='ERROR_SAP', error_msg=? WHERE orden_compra=?`)
             .run(errorMsg.slice(0, 250), oc);
           logPipeline(db, oc, 4, "upload", "ERROR", errorMsg.slice(0, 120));
