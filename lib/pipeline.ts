@@ -1,5 +1,4 @@
 import { backupDb } from "./db";
-import { clearSapClient } from "./sap-client";
 import { run as step0 } from "./steps/step0-download";
 import { run as step1 } from "./steps/step1-parse";
 import { run as step2 } from "./steps/step2-validate-parse";
@@ -8,6 +7,7 @@ import { run as step4 } from "./steps/step4-upload";
 import { run as step5 } from "./steps/step5-reconcile";
 import { run as step6 } from "./steps/step6-notify";
 import { run as step7 } from "./steps/step7-archive";
+import { clearSapClient, logoutSapClient } from "./sap-client";
 
 export interface StepResult {
   step: number;
@@ -66,64 +66,59 @@ export async function runPipeline(opts: PipelineOptions = {}): Promise<StepResul
   // Backup DB before running
   try { backupDb(); } catch { /* ignore */ }
 
-  clearSapClient();
+  try {
+    await logoutSapClient();
 
-  // Modo onlyStep o fromStep > 0: ejecución directa sin loop
-  if (onlyStep != null || fromStep > 0) {
-    const stepsToRun = onlyStep != null
-      ? STEPS.filter(s => s.n === onlyStep)
-      : STEPS.filter(s => s.n >= fromStep && s.n <= toStep);
-    const results = await runSteps(stepsToRun);
-    clearSapClient();
-    return results;
-  }
+    // Modo onlyStep o fromStep > 0: ejecución directa sin loop
+    if (onlyStep != null || fromStep > 0) {
+      const stepsToRun = onlyStep != null
+        ? STEPS.filter(s => s.n === onlyStep)
+        : STEPS.filter(s => s.n >= fromStep && s.n <= toStep);
+      return await runSteps(stepsToRun);
+    }
 
   // Flujo completo (fromStep=0): loop unitario — 1 correo a la vez hasta vaciar bandeja
   const allResults: StepResult[] = [];
   const processingSteps = STEPS.filter(s => s.n >= 1 && s.n <= toStep);
   let iteration = 0;
 
-  while (true) {
-    iteration++;
-    clearSapClient();
+    while (true) {
+      iteration++;
+      await logoutSapClient();
 
-    // Step 0: descargar 1 correo
-    const t0 = Date.now();
-    let downloadResult: StepResult;
-    try {
-      const r = await step0();
-      downloadResult = {
-        step: 0, name: "download",
-        procesados: r.procesados, errores: r.errores,
-        saltados: r.saltados, detalles: r.detalles,
-        duracionMs: Date.now() - t0,
-      };
-    } catch (e) {
-      downloadResult = {
-        step: 0, name: "download",
-        procesados: 0, errores: 1, saltados: 0,
-        detalles: [`Error en download: ${String(e)}`],
-        duracionMs: Date.now() - t0,
-      };
+      // Step 0: descargar 1 correo
+      const t0 = Date.now();
+      let downloadResult: StepResult;
+      try {
+        const r = await step0();
+        downloadResult = {
+          step: 0, name: "download",
+          procesados: r.procesados, errores: r.errores,
+          saltados: r.saltados, detalles: r.detalles,
+          duracionMs: Date.now() - t0,
+        };
+      } catch (e) {
+        downloadResult = {
+          step: 0, name: "download",
+          procesados: 0, errores: 1, saltados: 0,
+          detalles: [`Error en download: ${String(e)}`],
+          duracionMs: Date.now() - t0,
+        };
+      }
+
+      allResults.push(downloadResult);
+
+      // Si no hubo correos nuevos, terminar
+      if (downloadResult.procesados === 0) break;
+
+      // Pasos 1-7 para el correo recién descargado
+      const stepResults = await runSteps(processingSteps);
+      allResults.push(...stepResults);
     }
+    return allResults;
 
-    allResults.push(downloadResult);
-
-    // Si no hubo correos nuevos, terminar
-    if (downloadResult.procesados === 0) break;
-
-    // Pasos 1-7 para el correo recién descargado
-    const stepResults = await runSteps(processingSteps);
-    allResults.push(...stepResults);
+  } finally {
+    // Clean up SAP session regardless of success or failure
+    await logoutSapClient();
   }
-
-  // Clean up SAP session
-  try {
-    const { getSapClient } = await import("./sap-client");
-    const sap = await getSapClient().catch(() => null);
-    if (sap) await sap.logout();
-  } catch { /* ignore */ }
-  clearSapClient();
-
-  return allResults;
 }

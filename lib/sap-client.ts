@@ -54,12 +54,14 @@ export class SapB1Client {
 
   async logout(): Promise<void> {
     try {
+      console.log("SAP: Logging out...");
       await this._fetch(`${this.baseUrl}/Logout`, {
         method: "POST",
         headers: this._headers(),
       });
-    } catch {
-      /* ignore */
+      console.log("SAP: Logout successful.");
+    } catch (e) {
+      console.warn("SAP: Logout failed (ignoring):", String(e));
     }
     this.cookies = "";
   }
@@ -168,6 +170,13 @@ export async function getSapClient(): Promise<SapB1Client> {
     await _sapClient.login();
   }
   return _sapClient;
+}
+
+export async function logoutSapClient(): Promise<void> {
+  if (_sapClient) {
+    await _sapClient.logout();
+    _sapClient = null;
+  }
 }
 
 export function clearSapClient(): void {
