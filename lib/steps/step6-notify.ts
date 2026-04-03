@@ -148,7 +148,7 @@ function buildExcluidosHtml(rows: Array<Record<string, unknown>>): string {
       `<tr style="background:#f8d7da">
         <td style="padding:5px 12px">⛔</td>
         <td style="padding:5px 12px;font-family:monospace">${cat}</td>
-        <td style="padding:5px 12px;color:#721c24">No registrado en catálogo SAP — no subido</td>
+        <td style="padding:5px 12px;color:#721c24">Excluido - Número de catálogo del cliente no existe</td>
       </tr>`
     ).join("");
 
