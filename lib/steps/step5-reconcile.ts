@@ -157,12 +157,12 @@ export async function run(): Promise<StepResult> {
           });
         }
 
-        // Precio (SAP puede usar "Price" o "UnitPrice")
+        // Precio (SAP puede usar "Price" o "UnitPrice") — tolerancia 0%
         const pdfPrice = pdfLine.UnitPrice ?? 0;
         const sapPrice = Number(sapLine.Price ?? sapLine.UnitPrice ?? 0);
         if (pdfPrice > 0 && sapPrice > 0) {
-          const diff = Math.abs(pdfPrice - sapPrice) / Math.max(pdfPrice, 1);
-          if (diff > 0.01) {
+          // Comparar en centavos para evitar ruido de punto flotante
+          if (Math.round(pdfPrice * 100) !== Math.round(sapPrice * 100)) {
             diferencias.push({
               campo: `Precio [${pdfLine.SupplierCatNum}]`,
               pdf: pdfPrice,

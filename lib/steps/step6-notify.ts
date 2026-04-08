@@ -102,22 +102,34 @@ function buildDiscrepanciasHtml(rows: Array<Record<string, unknown>>): string {
 
     const filas = diferencias.map(d => {
       const esPrecio = String(d.campo).startsWith("Precio");
-      const fmt = (v: string | number) =>
-        esPrecio && typeof v === "number"
-          ? `$${v.toLocaleString("es-CO")}`
-          : String(v);
       const esExcluido = String(d.campo).startsWith("Artículo no subido");
-      const rowColor = esExcluido ? "#f8d7da" : "#fff3cd";
+      const rowColor = esPrecio ? "#f8d7da" : esExcluido ? "#f8d7da" : "#fff3cd";
+
+      const fmtNum = (v: string | number) =>
+        typeof v === "number"
+          ? v.toLocaleString("es-CO", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          : String(v);
+
+      let deltaCel = `<td style="padding:4px 10px"></td>`;
+      if (esPrecio && typeof d.pdf === "number" && typeof d.sap === "number") {
+        const delta = d.sap - d.pdf;
+        const pct   = d.pdf !== 0 ? ((delta / d.pdf) * 100).toFixed(1) : "—";
+        const sign  = delta > 0 ? "+" : "";
+        const color = delta !== 0 ? "#721c24" : "inherit";
+        deltaCel = `<td style="padding:4px 10px;color:${color};font-weight:bold">${sign}${fmtNum(delta)} (${sign}${pct}%)</td>`;
+      }
+
       return `<tr style="background:${rowColor}">
         <td style="padding:4px 10px">${d.campo}</td>
-        <td style="padding:4px 10px">${fmt(d.pdf)}</td>
-        <td style="padding:4px 10px">${fmt(d.sap)}</td>
+        <td style="padding:4px 10px">${fmtNum(d.pdf)}</td>
+        <td style="padding:4px 10px">${fmtNum(d.sap)}</td>
+        ${deltaCel}
       </tr>`;
     }).join("");
 
     return `
-    <div style="margin:16px 0;border:1px solid #ffc107;border-radius:4px;overflow:hidden">
-      <div style="background:#ffc107;padding:6px 12px;font-weight:bold">
+    <div style="margin:16px 0;border:1px solid #dc3545;border-radius:4px;overflow:hidden">
+      <div style="background:#dc3545;color:#fff;padding:6px 12px;font-weight:bold">
         ⚠ OC ${row.orden_compra}${docNum ? ` — DocNum SAP: ${docNum}` : ""} — Discrepancias
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -126,6 +138,7 @@ function buildDiscrepanciasHtml(rows: Array<Record<string, unknown>>): string {
             <th style="padding:6px 10px;text-align:left">Campo</th>
             <th style="padding:6px 10px;text-align:left">PDF</th>
             <th style="padding:6px 10px;text-align:left">SAP</th>
+            <th style="padding:6px 10px;text-align:left">Diferencia</th>
           </tr>
         </thead>
         <tbody>${filas}</tbody>
@@ -263,6 +276,7 @@ export async function run(): Promise<StepResult> {
     await transporter.sendMail({
       from: config.emailUser,
       to: config.notifyEmail,
+      cc: "pedidos@tamaprint.com",
       subject,
       html,
     });

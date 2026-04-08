@@ -401,6 +401,42 @@ const CLIENTES: Array<{ carpeta: string; nombre: string; prompt: string }> = [
   { carpeta: "Hermeco", nombre: "HERMECO", prompt: PROMPT_HERMECO },
 ];
 
+// Todas las carpetas a escanear (incluye "Otros" para PDFs mal clasificados en step0)
+const CARPETAS_A_ESCANEAR = [...CLIENTES.map(c => c.carpeta), "Otros"];
+
+// ── Detección de cliente desde el PDF (fuente de verdad) ─────────────────────
+// Los NITs son la señal más confiable: aparecen en toda OC como identificador del comprador.
+// Se normalizan quitando puntos para matchear "800.069.933" y "800069933" por igual.
+
+const CLIENT_NITS: Array<{ carpeta: string; nits: string[] }> = [
+  { carpeta: "Comodin", nits: ["800069933"] },
+  { carpeta: "Hermeco", nits: ["890924167"] },
+  { carpeta: "Exito",   nits: ["890900608"] },
+];
+
+// Keywords de texto como fallback (evitar falsos positivos — se usan solo si no hay NIT)
+const CLIENT_TEXT_KEYWORDS: Array<{ carpeta: string; keywords: string[] }> = [
+  { carpeta: "Comodin", keywords: ["gco", "comodin", "americanino", "gco.com.co"] },
+  { carpeta: "Hermeco", keywords: ["hermeco", "offcorss", "offcorss.com"] },
+  { carpeta: "Exito",   keywords: ["grupoexito", "grupo-exito", "grupo exito", "grupo éxito"] },
+];
+
+function detectClientFromPdf(pdfText: string): string | null {
+  // Paso 1: buscar NIT (se quitan puntos para normalizar formato colombiano)
+  const normalized = pdfText.replace(/\./g, "");
+  for (const { carpeta, nits } of CLIENT_NITS) {
+    if (nits.some(nit => normalized.includes(nit))) return carpeta;
+  }
+
+  // Paso 2: keywords de marca como fallback
+  const lower = pdfText.toLowerCase();
+  for (const { carpeta, keywords } of CLIENT_TEXT_KEYWORDS) {
+    if (keywords.some(kw => lower.includes(kw))) return carpeta;
+  }
+
+  return null;
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 export async function run(): Promise<StepResult> {
@@ -420,7 +456,10 @@ export async function run(): Promise<StepResult> {
     "ERROR_DUPLICADO", "ERROR_ITEMS", "ERROR_SAP",
   ]);
 
-  for (const { carpeta, nombre, prompt } of CLIENTES) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const pdfParseFn = require("pdf-parse/lib/pdf-parse") as (buf: Buffer) => Promise<{ text: string }>;
+
+  for (const carpeta of CARPETAS_A_ESCANEAR) {
     const clienteDir = path.join(config.pedidosRawDir, carpeta);
     if (!fs.existsSync(clienteDir)) continue;
 
@@ -433,9 +472,6 @@ export async function run(): Promise<StepResult> {
 
       const pdfs = fs.readdirSync(carpetaPath).filter(f => f.toLowerCase().endsWith(".pdf"));
       if (!pdfs.length) continue;
-
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const pdfParseFn = require("pdf-parse/lib/pdf-parse") as (buf: Buffer) => Promise<{ text: string }>;
 
       // Procesar TODOS los PDFs del correo — cada uno puede ser una OC distinta
       for (const pdfFile of pdfs) {
@@ -473,7 +509,36 @@ export async function run(): Promise<StepResult> {
             continue;
           }
 
-          const [order, status] = await parseWithAI(parsed.text, prompt);
+          // ── Detectar cliente desde el PDF (fuente de verdad) ──────────────
+          const detectedCarpeta = detectClientFromPdf(parsed.text);
+          const clienteInfo = CLIENTES.find(c => c.carpeta === detectedCarpeta);
+
+          if (!clienteInfo) {
+            result.saltados++;
+            result.detalles.push(`  ⚠ No se identificó cliente en el PDF — omitido (carpeta email: ${carpeta})`);
+            logPipeline(db, carpetaNombre, 1, "parse", "WARN", `${pdfFile}: cliente no detectado en PDF`);
+            fs.writeFileSync(skipMarker, "no-client-detected");
+            await sendAlertEmail(
+              `[OrderLoader] ⚠ Cliente no identificado en PDF — ${carpeta}/${carpetaNombre}`,
+              `<html><body style="font-family:Arial,sans-serif;font-size:13px">
+                <h3 style="color:#856404;background:#fff3cd;padding:10px;border-radius:4px">
+                  ⚠ No se pudo identificar el cliente desde el PDF
+                </h3>
+                <p>El PDF <b>${pdfFile}</b> está dirigido a Tamaprint pero no contiene
+                el NIT ni keywords de ningún cliente registrado.</p>
+                <p><b>Carpeta:</b> ${carpeta}/${carpetaNombre}</p>
+                <p>Verificar manualmente si corresponde a un cliente nuevo.</p>
+              </body></html>`
+            ).catch(() => {});
+            continue;
+          }
+
+          if (detectedCarpeta !== carpeta) {
+            result.detalles.push(`  ⚠ Mismatch: correo en carpeta "${carpeta}", PDF identifica cliente "${detectedCarpeta}" — usando prompt correcto`);
+            logPipeline(db, carpetaNombre, 1, "parse", "WARN", `${pdfFile}: carpeta=${carpeta} pdf_cliente=${detectedCarpeta}`);
+          }
+
+          const [order, status] = await parseWithAI(parsed.text, clienteInfo.prompt);
 
           if (!order) {
             result.errores++;
@@ -520,7 +585,7 @@ export async function run(): Promise<StepResult> {
           }
 
           const tx = db.transaction(() => {
-            insertSapOrder(db, order, ocFolder, nombre); // carpeta_origen = sub-folder de la OC
+            insertSapOrder(db, order, ocFolder, clienteInfo.nombre); // carpeta_origen = sub-folder de la OC
             logPipeline(db, order.NumAtCard, 1, "parse", "OK", `PDF: ${pdfFile}`);
           });
           tx();
