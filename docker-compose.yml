@@ -1,0 +1,18 @@
+services:
+  orderloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orderloader
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Carpeta donde la aplicación guardará DB y adjuntos según lib/config.ts
+      - DATA_DIR=/app/.data
+    env_file:
+      - .env
+    volumes:
+      # Volumen mapeado: [Ruta_Segura_Local]:[Ruta_Contenedor]
+      # Todos los datos de SQLite y pedidos vivirán localmente en la carpeta './data' al lado del docker-compose.yml
+      - ./.data:/app/.data

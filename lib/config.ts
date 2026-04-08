@@ -44,8 +44,10 @@ export function getConfig(): Config {
   // Workspace root = parent of this file's directory (orderloader/..)
   // In Next.js, process.cwd() is the project root
   const appRoot = process.cwd();
-  // The original workspace is one level up from the app
-  const workspaceRoot = path.resolve(appRoot, "..");
+  // Usar DATA_DIR del entorno si existe, de lo contrario usar proyecto/.data/
+  const workspaceRoot = process.env.DATA_DIR
+    ? path.resolve(process.env.DATA_DIR)
+    : path.resolve(appRoot, ".data");
 
   const emailUser = process.env.EMAIL_USER ?? "";
   const emailHost = process.env.EMAIL_HOST ?? "";
