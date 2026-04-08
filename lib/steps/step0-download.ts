@@ -79,14 +79,11 @@ export async function run(): Promise<StepResult> {
         envelope: true,
         source: true,
       })) {
-        const from = msg.envelope?.from?.[0]?.address ?? "";
-        if (!msg.flags?.has("\\Seen") && from.toLowerCase() === "pedidos@tamaprint.com") {
-          messages.push(msg);
-        }
+        messages.push(msg);
       }
 
       if (messages.length === 0) {
-        result.detalles.push("No hay correos nuevos de pedidos@tamaprint.com en A A INGRESAR IA");
+        result.detalles.push("No hay correos en A A INGRESAR IA");
         return result;
       }
 
@@ -197,9 +194,6 @@ export async function run(): Promise<StepResult> {
             JSON.stringify({ fase: 0, estado: "DESCARGADO", ts: new Date().toISOString() }, null, 2),
             "utf8"
           );
-
-          // Solo marcar como leído — el movimiento a INBOX.Ingresados lo hace step7
-          await client.messageFlagsAdd({ uid: msg.uid }, ["\\Seen"]);
 
           // Log to DB
           try {
