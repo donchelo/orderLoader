@@ -63,7 +63,7 @@ function buildDetalle(row: Record<string, unknown>): string {
   const estado = String(row.estado);
   const excluidos = parseExcluidos(row);
   const exclMsg = excluidos.length
-    ? ` — ${excluidos.length} artículo(s) excluido(s) por no existir en SAP` : "";
+    ? ` — ${excluidos.length} artículo(s) sin catálogo de cliente` : "";
 
   if ((estado === "VALIDADO" || estado === "SAP_MONTADO") && row.sap_doc_num) {
     return `DocNum SAP: ${row.sap_doc_num}${exclMsg}`;
@@ -161,14 +161,14 @@ function buildExcluidosHtml(rows: Array<Record<string, unknown>>): string {
       `<tr style="background:#f8d7da">
         <td style="padding:5px 12px">⛔</td>
         <td style="padding:5px 12px;font-family:monospace">${cat}</td>
-        <td style="padding:5px 12px;color:#721c24">Excluido - Número de catálogo del cliente no existe</td>
+        <td style="padding:5px 12px;color:#721c24">Catálogo de cliente no existe</td>
       </tr>`
     ).join("");
 
     return `
     <div style="margin:16px 0;border:1px solid #f5c6cb;border-radius:4px;overflow:hidden">
       <div style="background:#f5c6cb;padding:6px 12px;font-weight:bold;color:#721c24">
-        ⛔ OC ${row.orden_compra} — ${row.cliente_nombre}${row.sap_doc_num ? ` (DocNum SAP: ${row.sap_doc_num})` : ""} — Artículos excluidos por no existir en SAP
+        ⛔ OC ${row.orden_compra} — ${row.cliente_nombre}${row.sap_doc_num ? ` (DocNum SAP: ${row.sap_doc_num})` : ""} — Artículos sin catálogo de cliente
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead style="background:#343a40;color:#fff">
@@ -183,7 +183,7 @@ function buildExcluidosHtml(rows: Array<Record<string, unknown>>): string {
     </div>`;
   }).join("");
 
-  return `<h3 style="margin-top:24px;margin-bottom:8px;color:#721c24">⛔ Artículos no subidos a SAP (no existen en catálogo)</h3>${secciones}`;
+  return `<h3 style="margin-top:24px;margin-bottom:8px;color:#721c24">⛔ Artículos no subidos a SAP — Sin catálogo de cliente</h3>${secciones}`;
 }
 
 function buildHtml(rows: Array<Record<string, unknown>>, fecha: string): string {
