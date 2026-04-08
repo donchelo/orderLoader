@@ -68,7 +68,7 @@ export async function run(): Promise<StepResult> {
 
   try {
     await client.connect();
-    const lock = await client.getMailboxLock("INBOX");
+    const lock = await client.getMailboxLock("A A INGRESAR IA");
     const createdFolders = new Set<string>();
 
     try {
@@ -86,7 +86,7 @@ export async function run(): Promise<StepResult> {
       }
 
       if (messages.length === 0) {
-        result.detalles.push("No hay correos nuevos de pedidos@tamaprint.com en INBOX");
+        result.detalles.push("No hay correos nuevos de pedidos@tamaprint.com en A A INGRESAR IA");
         return result;
       }
 
