@@ -1,17 +1,37 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { runPipeline } from "@/lib/pipeline";
 
 export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json().catch(() => ({}));
-    const { fromStep, toStep, onlyStep } = body as Record<string, number | undefined>;
+  const body = await req.json().catch(() => ({}));
+  const { fromStep, toStep, onlyStep } = body as Record<string, number | undefined>;
 
-    const results = await runPipeline({ fromStep, toStep, onlyStep });
-    return NextResponse.json({ ok: true, results });
-  } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: String(e) },
-      { status: 500 }
-    );
-  }
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const emit = (data: object) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      };
+
+      try {
+        await runPipeline({
+          fromStep, toStep, onlyStep,
+          onStep: (result) => emit({ type: "step", result }),
+        });
+        emit({ type: "done" });
+      } catch (e) {
+        emit({ type: "error", error: String(e) });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    },
+  });
 }

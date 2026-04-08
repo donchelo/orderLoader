@@ -12,19 +12,36 @@ interface StepResult {
   duracionMs: number;
 }
 
+const STEP_LABELS: Record<string, string> = {
+  "download":       "Descargar correos",
+  "parse":          "Extraer pedidos",
+  "validate-parse": "Validar extracción",
+  "sap-query":      "Consultar SAP",
+  "upload":         "Subir a SAP",
+  "reconcile":      "Reconciliar",
+  "notify":         "Notificar clientes",
+  "archive":        "Archivar",
+};
+
 interface Props {
   onComplete?: () => void;
 }
 
 export default function RunPipelineButton({ onComplete }: Props) {
   const [running, setRunning] = useState(false);
-  const [results, setResults] = useState<StepResult[] | null>(null);
+  const [results, setResults] = useState<StepResult[]>([]);
+  const [currentStep, setCurrentStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
 
   async function handleRun() {
     setRunning(true);
-    setResults(null);
+    setResults([]);
+    setCurrentStep("download");
     setError(null);
+    setDone(false);
+    setExpandedSteps(new Set());
 
     try {
       const res = await fetch("/api/pipeline/run", {
@@ -32,18 +49,53 @@ export default function RunPipelineButton({ onComplete }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const data = await res.json();
-      if (data.ok) {
-        setResults(data.results);
-        onComplete?.();
-      } else {
-        setError(data.error ?? "Error desconocido");
+
+      if (!res.body) throw new Error("Sin stream");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done: streamDone, value } = await reader.read();
+        if (streamDone) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const json = JSON.parse(line.slice(6));
+
+          if (json.type === "step") {
+            const r: StepResult = json.result;
+            setResults(prev => [...prev, r]);
+            // Hint at next step
+            setCurrentStep(r.step < 7 ? Object.keys(STEP_LABELS)[r.step + 1] : null);
+          } else if (json.type === "done") {
+            setCurrentStep(null);
+            setDone(true);
+            onComplete?.();
+          } else if (json.type === "error") {
+            setError(json.error);
+          }
+        }
       }
     } catch (e) {
       setError(String(e));
     } finally {
       setRunning(false);
+      setCurrentStep(null);
     }
+  }
+
+  function toggleExpand(step: number) {
+    setExpandedSteps(prev => {
+      const next = new Set(prev);
+      next.has(step) ? next.delete(step) : next.add(step);
+      return next;
+    });
   }
 
   return (
@@ -62,7 +114,7 @@ export default function RunPipelineButton({ onComplete }: Props) {
           cursor: running ? "not-allowed" : "pointer",
         }}
       >
-        {running ? "⏳ Ejecutando pipeline…" : "▶ Correr Pipeline"}
+        {running ? "⏳ Ejecutando…" : "▶ Correr Pipeline"}
       </button>
 
       {error && (
@@ -71,37 +123,49 @@ export default function RunPipelineButton({ onComplete }: Props) {
         </div>
       )}
 
-      {results && (
-        <div style={{ marginTop: 16 }}>
-          <h3 style={{ margin: "0 0 8px", color: "#000" }}>Resultados del pipeline</h3>
-          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13, color: "#000" }}>
-            <thead>
-              <tr style={{ background: "#f8f9fa", color: "#000", borderBottom: "2px solid #dee2e6" }}>
-                <th style={{ padding: "6px 12px", textAlign: "left" }}>Step</th>
-                <th style={{ padding: "6px 12px" }}>Procesados</th>
-                <th style={{ padding: "6px 12px" }}>Errores</th>
-                <th style={{ padding: "6px 12px" }}>Saltados</th>
-                <th style={{ padding: "6px 12px" }}>Tiempo</th>
-              </tr>
-            </thead>
-            <tbody>
-              {results.map((r, i) => (
-                <tr key={i} style={{ background: r.errores > 0 ? "#f8d7da" : "#d1e7dd", color: "#000" }}>
-                  <td style={{ padding: "6px 12px" }}>{r.step}: {r.name}</td>
-                  <td style={{ padding: "6px 12px", textAlign: "center" }}>{r.procesados}</td>
-                  <td style={{ padding: "6px 12px", textAlign: "center" }}>{r.errores}</td>
-                  <td style={{ padding: "6px 12px", textAlign: "center" }}>{r.saltados}</td>
-                  <td style={{ padding: "6px 12px", textAlign: "center" }}>{r.duracionMs}ms</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <details style={{ marginTop: 8 }}>
-            <summary style={{ cursor: "pointer", fontSize: 13, color: "#000" }}>Ver detalles</summary>
-            <pre style={{ background: "#f8f9fa", padding: 12, borderRadius: 6, fontSize: 12, overflowX: "auto", color: "#000" }}>
-              {results.flatMap(r => r.detalles).join("\n")}
-            </pre>
-          </details>
+      {(results.length > 0 || running) && (
+        <div style={{ marginTop: 16, border: "1px solid #dee2e6", borderRadius: 8, overflow: "hidden" }}>
+          <div style={{ background: "#f8fafc", padding: "10px 16px", borderBottom: "1px solid #dee2e6", fontSize: 13, fontWeight: 600 }}>
+            {done ? "✅ Pipeline completado" : `⏳ Ejecutando pipeline…`}
+          </div>
+
+          {/* Steps completados */}
+          {results.map((r) => (
+            <div key={`${r.step}-${r.name}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
+              <div
+                style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  padding: "8px 16px", fontSize: 13,
+                  background: r.errores > 0 ? "#fff1f2" : "#f0fdf4",
+                  cursor: r.detalles.length > 0 ? "pointer" : "default",
+                }}
+                onClick={() => r.detalles.length > 0 && toggleExpand(r.step)}
+              >
+                <span style={{ fontWeight: 600, minWidth: 20, color: "#64748b" }}>{r.step}</span>
+                <span style={{ flex: 1 }}>{STEP_LABELS[r.name] ?? r.name}</span>
+                <span style={{ color: "#16a34a", fontSize: 12 }}>✓ {r.procesados}</span>
+                {r.errores > 0 && <span style={{ color: "#dc2626", fontSize: 12 }}>✗ {r.errores}</span>}
+                {r.saltados > 0 && <span style={{ color: "#94a3b8", fontSize: 12 }}>— {r.saltados}</span>}
+                <span style={{ color: "#94a3b8", fontSize: 11 }}>{r.duracionMs}ms</span>
+                {r.detalles.length > 0 && (
+                  <span style={{ color: "#94a3b8", fontSize: 11 }}>{expandedSteps.has(r.step) ? "▲" : "▼"}</span>
+                )}
+              </div>
+              {expandedSteps.has(r.step) && (
+                <pre style={{ margin: 0, padding: "8px 16px 8px 48px", fontSize: 11, background: "#f8fafc", color: "#374151", overflowX: "auto" }}>
+                  {r.detalles.join("\n")}
+                </pre>
+              )}
+            </div>
+          ))}
+
+          {/* Step en curso */}
+          {running && currentStep && (
+            <div style={{ padding: "8px 16px", fontSize: 13, color: "#64748b", display: "flex", gap: 12, alignItems: "center" }}>
+              <span style={{ minWidth: 20 }}>⏳</span>
+              <span>{STEP_LABELS[currentStep] ?? currentStep}…</span>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import PipelineStatus from "./PipelineStatus";
 
 export interface Pedido {
@@ -21,6 +22,7 @@ interface Props {
   pedidos: Pedido[];
   filtroEstado: string;
   onFiltroChange: (estado: string) => void;
+  onSelect: (pedido: Pedido) => void;
 }
 
 function formatCOP(value: number): string {
@@ -32,8 +34,30 @@ function formatDate(d: string | null): string {
   return d.split("T")[0];
 }
 
-export default function PedidoTable({ pedidos, filtroEstado, onFiltroChange }: Props) {
-  const filtered = filtroEstado === "todos" ? pedidos : pedidos.filter(p => p.estado === filtroEstado);
+function ErrorCell({ msg }: { msg: string | null }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!msg) return null;
+  const short = msg.length > 60;
+  return (
+    <span>
+      {expanded || !short ? msg : msg.slice(0, 60) + "…"}
+      {short && (
+        <button
+          onClick={() => setExpanded(v => !v)}
+          style={{ marginLeft: 6, background: "none", border: "none", color: "#000", textDecoration: "underline", cursor: "pointer", fontSize: 11, padding: 0 }}
+        >
+          {expanded ? "menos" : "más"}
+        </button>
+      )}
+    </span>
+  );
+}
+
+export default function PedidoTable({ pedidos, filtroEstado, onFiltroChange, onSelect }: Props) {
+  const [busqueda, setBusqueda] = useState("");
+
+  const filtered = (filtroEstado === "todos" ? pedidos : pedidos.filter(p => p.estado === filtroEstado))
+    .filter(p => !busqueda || p.cliente_nombre.toLowerCase().includes(busqueda.toLowerCase()));
 
   // Derive available states from data
   const stateCounts = pedidos.reduce((acc, p) => {
@@ -52,6 +76,28 @@ export default function PedidoTable({ pedidos, filtroEstado, onFiltroChange }: P
 
   return (
     <div>
+      {/* Búsqueda */}
+      <div style={{ marginBottom: 12 }}>
+        <input
+          type="text"
+          placeholder="Buscar por cliente…"
+          value={busqueda}
+          onChange={e => setBusqueda(e.target.value)}
+          style={{
+            padding: "7px 12px", fontSize: 13, border: "1px solid #dee2e6",
+            borderRadius: 6, width: 240, outline: "none", color: "#000",
+          }}
+        />
+        {busqueda && (
+          <button
+            onClick={() => setBusqueda("")}
+            style={{ marginLeft: 8, background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#000" }}
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
       {/* Filtro */}
       <div style={{ marginBottom: 20, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <span style={{ fontSize: 13, fontWeight: 600, marginRight: 4, color: "#000" }}>Filtrar por estado:</span>
@@ -148,9 +194,11 @@ export default function PedidoTable({ pedidos, filtroEstado, onFiltroChange }: P
               {filtered.map((p) => (
                 <tr
                   key={p.orden_compra}
+                  onClick={() => onSelect(p)}
                   style={{
                     borderBottom: "1px solid #f1f5f9",
                     background: p.estado.startsWith("ERROR") ? "#fff1f2" : undefined,
+                    cursor: "pointer",
                   }}
                   onMouseEnter={(e) => e.currentTarget.style.background = p.estado.startsWith("ERROR") ? "#ffe4e6" : "#f8fafc"}
                   onMouseLeave={(e) => e.currentTarget.style.background = p.estado.startsWith("ERROR") ? "#fff1f2" : "transparent"}
@@ -164,8 +212,8 @@ export default function PedidoTable({ pedidos, filtroEstado, onFiltroChange }: P
                     <PipelineStatus estado={p.estado} />
                   </td>
                   <td style={{ padding: "10px 16px", color: "#000", fontSize: 12 }}>{p.sap_doc_num ?? "—"}</td>
-                  <td style={{ padding: "10px 16px", color: "#000", fontSize: 12, maxWidth: 200, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {p.error_msg || ""}
+                  <td style={{ padding: "10px 16px", color: "#000", fontSize: 12, maxWidth: 240 }}>
+                    <ErrorCell msg={p.error_msg} />
                   </td>
                 </tr>
               ))}

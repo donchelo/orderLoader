@@ -241,8 +241,15 @@ export async function run(): Promise<StepResult> {
     (r.estado === "VALIDADO" || r.estado === "SAP_MONTADO") && parseExcluidos(r).length > 0
   ).length;
   const nErr = rows.filter(r => String(r.estado).startsWith("ERROR_")).length;
-  const partesParcial = nParcial > 0 ? ` / ${nParcial} parcial(es)` : "";
-  const subject = `[OrderLoader] ${fecha} — ${nOk} OK${partesParcial} / ${nErr} error(es)`;
+
+  const ocs = [...new Set(rows.map(r => String(r.orden_compra)))];
+  const clientes = [...new Set(rows.map(r => String(r.cliente_nombre || "")).filter(Boolean))];
+  const ocPart = ocs.length === 1 ? `OC ${ocs[0]}` : `${ocs.length} OC(s): ${ocs.join(", ")}`;
+  const clientePart = clientes.length <= 2 ? clientes.join(" / ") : `${clientes.length} clientes`;
+  const estadoPart = nErr > 0
+    ? `${nErr} error(es)${nOk + nParcial > 0 ? ` · ${nOk + nParcial} OK` : ""}`
+    : `${nOk} OK${nParcial > 0 ? ` · ${nParcial} parcial(es)` : ""}`;
+  const subject = `[OrderLoader] ${ocPart} | ${clientePart} | ${estadoPart}`;
   const html = buildHtml(rows, fecha);
 
   const transporter = nodemailer.createTransport({

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import PedidoTable, { Pedido } from "@/components/PedidoTable";
 import RunPipelineButton from "@/components/RunPipelineButton";
+import PedidoDetail from "@/components/PedidoDetail";
 
 export default function Home() {
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
@@ -10,6 +11,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [selectedPedido, setSelectedPedido] = useState<Pedido | null>(null);
 
   const fetchPedidos = useCallback(async () => {
     try {
@@ -133,10 +135,16 @@ export default function Home() {
               pedidos={pedidos}
               filtroEstado={filtroEstado}
               onFiltroChange={setFiltroEstado}
+              onSelect={setSelectedPedido}
             />
           )}
         </div>
       </main>
+      <PedidoDetail
+        pedido={selectedPedido}
+        onClose={() => setSelectedPedido(null)}
+        onRetryDone={() => { fetchPedidos(); setSelectedPedido(null); }}
+      />
     </div>
   );
 }

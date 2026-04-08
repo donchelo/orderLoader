@@ -23,6 +23,7 @@ export interface PipelineOptions {
   fromStep?: number;
   toStep?: number;
   onlyStep?: number;
+  onStep?: (result: StepResult) => void;
 }
 
 const STEPS = [
@@ -36,32 +37,35 @@ const STEPS = [
   { n: 7, name: "archive",        fn: step7 },
 ];
 
-async function runSteps(stepsToRun: typeof STEPS): Promise<StepResult[]> {
+async function runSteps(stepsToRun: typeof STEPS, onStep?: PipelineOptions["onStep"]): Promise<StepResult[]> {
   const results: StepResult[] = [];
   for (const step of stepsToRun) {
     const t0 = Date.now();
+    let result: StepResult;
     try {
       const r = await step.fn();
-      results.push({
+      result = {
         step: step.n, name: step.name,
         procesados: r.procesados, errores: r.errores,
         saltados: r.saltados, detalles: r.detalles,
         duracionMs: Date.now() - t0,
-      });
+      };
     } catch (e) {
-      results.push({
+      result = {
         step: step.n, name: step.name,
         procesados: 0, errores: 1, saltados: 0,
         detalles: [`Error inesperado en step ${step.n}: ${String(e)}`],
         duracionMs: Date.now() - t0,
-      });
+      };
     }
+    results.push(result);
+    onStep?.(result);
   }
   return results;
 }
 
 export async function runPipeline(opts: PipelineOptions = {}): Promise<StepResult[]> {
-  const { fromStep = 0, toStep = 7, onlyStep } = opts;
+  const { fromStep = 0, toStep = 7, onlyStep, onStep } = opts;
 
   // Backup DB before running
   try { backupDb(); } catch { /* ignore */ }
@@ -74,7 +78,7 @@ export async function runPipeline(opts: PipelineOptions = {}): Promise<StepResul
       const stepsToRun = onlyStep != null
         ? STEPS.filter(s => s.n === onlyStep)
         : STEPS.filter(s => s.n >= fromStep && s.n <= toStep);
-      return await runSteps(stepsToRun);
+      return await runSteps(stepsToRun, onStep);
     }
 
   // Flujo completo (fromStep=0): loop unitario — 1 correo a la vez hasta vaciar bandeja
@@ -107,12 +111,13 @@ export async function runPipeline(opts: PipelineOptions = {}): Promise<StepResul
       }
 
       allResults.push(downloadResult);
+      onStep?.(downloadResult);
 
       // Si no hubo correos nuevos, terminar
       if (downloadResult.procesados === 0) break;
 
       // Pasos 1-7 para el correo recién descargado
-      const stepResults = await runSteps(processingSteps);
+      const stepResults = await runSteps(processingSteps, onStep);
       allResults.push(...stepResults);
     }
     return allResults;
