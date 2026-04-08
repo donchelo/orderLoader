@@ -186,7 +186,39 @@ function buildExcluidosHtml(rows: Array<Record<string, unknown>>): string {
   return `<h3 style="margin-top:24px;margin-bottom:8px;color:#721c24">⛔ Artículos no subidos a SAP — Sin catálogo de cliente</h3>${secciones}`;
 }
 
-function buildHtml(rows: Array<Record<string, unknown>>, fecha: string): string {
+function buildCostHtml(db: any, rows: Array<Record<string, unknown>>): string {
+  const ocs = rows.map(r => r.orden_compra);
+  if (!ocs.length) return "";
+
+  const placeholders = ocs.map(() => "?").join(",");
+  const usage = db.prepare(`
+    SELECT SUM(input_tokens) as input, SUM(output_tokens) as output
+    FROM pipeline_log
+    WHERE orden_compra IN (${placeholders}) AND fase_nombre = 'parse'
+  `).get(...ocs) as { input: number | null, output: number | null };
+
+  if (!usage || (usage.input === null && usage.output === null)) return "";
+
+  const PRICING = { input: 3.0, output: 15.0, trm: 4000 };
+  const inTokens = usage.input || 0;
+  const outTokens = usage.output || 0;
+  const inUsd = (inTokens / 1000000) * PRICING.input;
+  const outUsd = (outTokens / 1000000) * PRICING.output;
+  const totalCop = (inUsd + outUsd) * PRICING.trm;
+
+  return `
+  <div style="margin-top:24px;padding:12px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:4px">
+    <h4 style="margin:0 0 8px 0;color:#495057">📊 Resumen de Consumo IA (Anthropic)</h4>
+    <table style="font-size:12px;color:#6c757d">
+      <tr><td>Tokens Entrada:</td><td style="padding-left:12px">${inTokens.toLocaleString()}</td></tr>
+      <tr><td>Tokens Salida:</td><td style="padding-left:12px">${outTokens.toLocaleString()}</td></tr>
+      <tr><td><b>Inversión Est. (COP):</b></td><td style="padding-left:12px"><b>$${totalCop.toFixed(0)} COP</b></td></tr>
+    </table>
+    <p style="font-size:10px;margin:8px 0 0 0;color:#adb5bd">* Calculado con TRM $${PRICING.trm} y precios oficiales Claude 3.5 Sonnet</p>
+  </div>`;
+}
+
+function buildHtml(db: any, rows: Array<Record<string, unknown>>, fecha: string): string {
   const filas = rows.map(row => {
     const estado = String(row.estado);
     const esParcial = (estado === "SAP_MONTADO" || estado === "VALIDADO") && parseExcluidos(row).length > 0;
@@ -215,6 +247,7 @@ function buildHtml(rows: Array<Record<string, unknown>>, fecha: string): string 
   </table>
   ${buildExcluidosHtml(rows)}
   ${buildDiscrepanciasHtml(rows)}
+  ${buildCostHtml(db, rows)}
   <p style="color:#888;font-size:11px;margin-top:16px">
     Generado automáticamente por OrderLoader Pipeline · ${fecha}
   </p>
@@ -263,7 +296,7 @@ export async function run(): Promise<StepResult> {
     ? `${nErr} error(es)${nOk + nParcial > 0 ? ` · ${nOk + nParcial} OK` : ""}`
     : `${nOk} OK${nParcial > 0 ? ` · ${nParcial} parcial(es)` : ""}`;
   const subject = `[OrderLoader] ${ocPart} | ${clientePart} | ${estadoPart}`;
-  const html = buildHtml(rows, fecha);
+  const html = buildHtml(db, rows, fecha);
 
   const transporter = nodemailer.createTransport({
     host: config.smtpHost,

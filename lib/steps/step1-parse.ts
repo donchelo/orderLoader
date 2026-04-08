@@ -31,9 +31,9 @@ function yyyymmddToIso(d: string): string {
 
 // ── AI Parser ─────────────────────────────────────────────────────────────────
 
-async function parseWithAI(pdfText: string, prompt: string): Promise<[SapB1Order | null, string]> {
+async function parseWithAI(pdfText: string, prompt: string): Promise<[SapB1Order | null, string, { input?: number, output?: number }]> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return [null, "ANTHROPIC_API_KEY no configurado en .env"];
+  if (!apiKey) return [null, "ANTHROPIC_API_KEY no configurado en .env", {}];
 
   const client = new Anthropic({ apiKey });
 
@@ -46,7 +46,8 @@ async function parseWithAI(pdfText: string, prompt: string): Promise<[SapB1Order
   });
 
   const text = msg.content[0].type === "text" ? msg.content[0].text.trim() : "";
-  if (!text) return [null, "Respuesta vacía del modelo"];
+  const usage = { input: msg.usage?.input_tokens, output: msg.usage?.output_tokens };
+  if (!text) return [null, "Respuesta vacía del modelo", usage];
 
   const clean = text.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "").trim();
 
@@ -58,12 +59,12 @@ async function parseWithAI(pdfText: string, prompt: string): Promise<[SapB1Order
 
     if (!result.success) {
       const issues = result.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join(" | ");
-      return [null, `Error de validación AI: ${issues}`];
+      return [null, `Error de validación AI: ${issues}`, usage];
     }
 
-    return [result.data, "OK"];
+    return [result.data, "OK", usage];
   } catch (e) {
-    return [null, `JSON parse error: ${String(e).slice(0, 80)} | Respuesta: ${clean.slice(0, 200)}`];
+    return [null, `JSON parse error: ${String(e).slice(0, 80)} | Respuesta: ${clean.slice(0, 200)}`, usage];
   }
 }
 
@@ -289,12 +290,12 @@ export async function run(): Promise<StepResult> {
             logPipeline(db, carpetaNombre, 1, "parse", "WARN", `${pdfFile}: carpeta=${carpeta} pdf_cliente=${detectedCarpeta}`);
           }
 
-          const [order, status] = await parseWithAI(parsed.text, clienteInfo.prompt);
+          const [order, status, usage] = await parseWithAI(parsed.text, clienteInfo.prompt);
 
           if (!order) {
             result.errores++;
             result.detalles.push(`  ✗ ${status}`);
-            logPipeline(db, carpetaNombre, 1, "parse", "ERROR", `AI parse fallido: ${status}`);
+            logPipeline(db, carpetaNombre, 1, "parse", "ERROR", `AI parse fallido: ${status}`, usage.input, usage.output);
             const retries = fs.existsSync(retriesPath)
               ? parseInt(fs.readFileSync(retriesPath, "utf8") || "0") + 1 : 1;
             if (retries >= 3) {
@@ -337,7 +338,7 @@ export async function run(): Promise<StepResult> {
 
           const tx = db.transaction(() => {
             insertSapOrder(db, order, ocFolder, clienteInfo.nombre); // carpeta_origen = sub-folder de la OC
-            logPipeline(db, order.NumAtCard, 1, "parse", "OK", `PDF: ${pdfFile}`);
+            logPipeline(db, order.NumAtCard, 1, "parse", "OK", `PDF: ${pdfFile}`, usage.input, usage.output);
           });
           tx();
 

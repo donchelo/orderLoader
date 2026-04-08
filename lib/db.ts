@@ -109,6 +109,8 @@ export function migrate(): void {
       fase_nombre     TEXT,
       estado_resultado TEXT,
       mensaje         TEXT,
+      input_tokens    INTEGER,
+      output_tokens   INTEGER,
       ts              TEXT DEFAULT (datetime('now'))
     );
 
@@ -120,6 +122,8 @@ export function migrate(): void {
 
   // Migraciones para columnas agregadas después de la creación inicial
   try { db.exec(`ALTER TABLE pedidos_maestro ADD COLUMN items_excluidos TEXT`); } catch { /* ya existe */ }
+  try { db.exec(`ALTER TABLE pipeline_log ADD COLUMN input_tokens INTEGER`); } catch { /* ya existe */ }
+  try { db.exec(`ALTER TABLE pipeline_log ADD COLUMN output_tokens INTEGER`); } catch { /* ya existe */ }
 
   db.close();
   console.log("DB migrada correctamente:", config.dbPath);
@@ -131,12 +135,14 @@ export function logPipeline(
   fase: number,
   faseNombre: string,
   estado: "OK" | "ERROR" | "WARN",
-  mensaje: string
+  mensaje: string,
+  inputTokens?: number,
+  outputTokens?: number
 ): void {
   db.prepare(
-    `INSERT INTO pipeline_log (orden_compra, fase, fase_nombre, estado_resultado, mensaje)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(oc, fase, faseNombre, estado, mensaje);
+    `INSERT INTO pipeline_log (orden_compra, fase, fase_nombre, estado_resultado, mensaje, input_tokens, output_tokens)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(oc, fase, faseNombre, estado, mensaje, inputTokens ?? null, outputTokens ?? null);
 }
 
 export function backupDb(): string | null {
