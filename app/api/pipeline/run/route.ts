@@ -2,6 +2,17 @@ import { NextRequest } from "next/server";
 import { runPipeline } from "@/lib/pipeline";
 
 export async function POST(req: NextRequest) {
+  // Security check for automated triggers
+  const authHeader = req.headers.get("Authorization");
+  const cronSecret = process.env.CRON_SECRET;
+
+  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+    return new Response(JSON.stringify({ error: "Unauthorized" }), { 
+      status: 401, 
+      headers: { "Content-Type": "application/json" } 
+    });
+  }
+
   const body = await req.json().catch(() => ({}));
   const { fromStep, toStep, onlyStep } = body as Record<string, number | undefined>;
 
