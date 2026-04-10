@@ -1,0 +1,10 @@
+nohup: no se tendrá en cuenta la entrada
+
+> orderloader@0.1.0 start
+> next start
+
+▲ Next.js 16.2.1
+- Local:         http://localhost:3000
+- Network:       http://192.168.86.250:3000
+✓ Ready in 96ms
+⚠ "next start" does not work with "output: standalone" configuration. Use "node .next/standalone/server.js" instead.
